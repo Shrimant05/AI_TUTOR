@@ -226,7 +226,12 @@ export default function Dashboard() {
   );
 
   return (
-    <div style={{maxWidth: '1200px', margin: '0 auto', width: '100%', paddingBottom: '50px'}}>
+    <div style={{
+  maxWidth: "1200px",
+  margin: "0 auto",
+  width: "100%",
+  padding: "30px 10px 60px",
+}}>
       
       {/* Header */}
       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px'}}>
