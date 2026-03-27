@@ -1,0 +1,60 @@
+import os
+import datetime
+import jwt
+import bcrypt
+from passlib.context import CryptContext
+from fastapi import Request, HTTPException, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+SECRET_KEY = os.environ.get("JWT_SECRET", "super-secret-key-that-should-be-in-env")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+
+# Use pbkdf2_sha256 for new hashes to avoid runtime incompatibilities
+# between passlib and newer bcrypt backend versions.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+security = HTTPBearer()
+
+def verify_password(plain_password, hashed_password):
+    # Backward compatibility for existing bcrypt hashes already in DB.
+    if hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        except Exception:
+            return False
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def decode_access_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    user_id: str = payload.get("sub")
+    role: str = payload.get("role")
+    if user_id is None or role is None:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+    return {"user_id": user_id, "role": role}
+
+def verify_token_from_header(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    token = auth_header.split(" ")[1]
+    return decode_access_token(token)

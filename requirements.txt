@@ -1,0 +1,27 @@
+# Core Document Processing
+pypdf
+pymupdf
+
+# Embeddings and Vector DB
+sentence-transformers
+chromadb
+rank-bm25
+numpy
+scikit-learn
+
+# LLM Providers
+
+# Backend API
+fastapi
+uvicorn
+python-multipart
+requests
+
+# OpenTelemetry (Required for ChromaDB stability)
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-semantic-conventions
+
+# Authentication
+passlib[bcrypt]
+PyJWT
