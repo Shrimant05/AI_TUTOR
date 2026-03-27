@@ -52,18 +52,25 @@ def _fallback_socratic_reply(query, context_text, has_attempt=False, unable_to_a
 
 
 SYSTEM_PROMPT = """
-You are a Socratic College Tutor. 
+You are a strict Socratic College Tutor. 
 1. Use ONLY the provided context to help the student.
-2. NEVER give the direct answer, final numeric result, final code, or full derivation.
-3. Your motive is to make the student learn. Always explain the concept briefly and ask guiding questions that move them toward the final answer.
+2. NEVER give the direct answer, final numeric result, final code, or full derivation under ANY circumstances.
+3. Your main goal is to make the student figure out the answer themselves. Do NOT explain concepts outright; instead, slowly converge toward the answer by asking highly targeted guiding questions that force the student to think.
 4. Always cite the sources utilized from the context.
-5. If the student asks for the final answer directly, politely refuse and explicitly say your motive is helping them learn, then ask a guiding question.
-6. CRITICAL: If the student provides an attempted answer or calculation, you MUST evaluate if it is correct or incorrect based on the context. If correct, confirm it explicitly. If incorrect, gently point out where the error might be.
-7. Follow this hint ladder:
-   - Level 1: Ask 1-2 guiding questions only.
-   - Level 2: Give a small hint or a partial setup, still no final answer.
-   - Level 3: Share the relevant relation, then ask the student to substitute values.
-8. If the student's latest answer is correct, acknowledge it clearly and end the chat politely. Do not ask another follow-up question in that case.
+5. If the student asks for the direct answer, politely refuse and ask a foundational question instead.
+6. CRITICAL: Evaluate the student's attempts strictly. If incorrect, gently point out the error's location but do not fix it for them.
+7. ANSWER APPRECIATION (NEW): When a student provides a response that is conceptually correct or on the right track:
+   a) First, acknowledge and appreciate their answer warmly (e.g., "Correct!", "Excellent observation!", "Exactly right!")
+   b) Then ask a follow-up guiding question to deepen their understanding
+   c) Example: If they say "use a pointer to track the top element," respond: "Exactly right! A pointer works perfect. Now, how would this pointer change each time you add or remove an element?"
+   d) NEVER dismiss correct or partially-correct conceptual answers as "outside classroom material"
+   e) Connect their answer to the context material and build on it
+8. Follow this step-by-step Socratic ladder:
+   - Level 1: Ask 1 focused guiding question. Do not explain the next step.
+   - Level 2: Give a tiny conceptual hint, then ask how it applies.
+   - Level 3: Share the relevant formula/relation, but ask the student to perform the substitution.
+9. If a student's answer appears incomplete or partially correct, appreciate the correct part and guide them on what's missing.
+10. Only acknowledge a correct final answer and end the chat politely if the student truly solved it.
 
 OUTPUT INSTRUCTION:
 Provide your response strictly in the following JSON format:
@@ -203,6 +210,82 @@ def _tokenize_text(text: str) -> Set[str]:
     return {t for t in tokens if len(t) >= 3 and t not in stop}
 
 
+def _is_conceptual_answer(query: str) -> bool:
+    """
+    Detect if the student is providing a conceptual answer (vs asking a question).
+    Examples: "pointer", "hash table", "use stack", "track with an index", "linked list"
+    """
+    text = (query or "").strip().lower()
+    if not text: return False
+    
+    # Signs of providing an answer/suggestion
+    answer_markers = (
+        "use ", "pointer", "index", "track", "stack", "queue", "list", "array", "hash", "tree", "graph",
+        "algorithm", "method", "approach", "idea", "solution", "way", "through", "by ", "with ",
+        "linked", "dynamic", "static", "recursive", "loop", "condition", "counter", "variable"
+    )
+    
+    has_answer_marker = any(marker in text for marker in answer_markers)
+    # Must be a statement, not a question
+    is_question = "?" in text
+    
+    return has_answer_marker and not is_question
+
+
+def _is_response_to_guiding_question(query: str, history) -> bool:
+    """
+    Check if the student is responding to a guiding question the tutor just asked.
+    This helps determine if a short answer deserves evaluation rather than rejection.
+    """
+    if not history: return False
+    
+    # Look for the most recent tutor message containing a question
+    for turn in reversed(history or []):
+        if (turn.get("role") or "").lower() == "tutor":
+            tutor_msg = (turn.get("content") or "").strip()
+            if "?" in tutor_msg:
+                return True
+            break
+    
+    return False
+
+
+def _is_retrieval_relevant_for_response(query: str, results, history, min_overlap: float = 0.22) -> tuple:
+    """
+    Enhanced retrieval validation that's smarter for student responses/answers.
+    Returns (is_relevant: bool, evaluation_hint: str)
+    
+    - If student is responding to a guiding question, be more lenient
+    - If student's answer looks conceptual, allow it even with lower overlap
+    - Returns tuple of (is_relevant, hint) for later use
+    """
+    query_tokens = _tokenize_text(query)
+    if not query_tokens:
+        return True, "empty_query"
+    
+    is_responding_to_question = _is_response_to_guiding_question(query, history)
+    is_conceptual = _is_conceptual_answer(query)
+    
+    # If student is providing a conceptual answer to a guiding question, be more lenient
+    if is_responding_to_question and is_conceptual:
+        # Use 15% overlap threshold instead of 22% for student responses
+        min_overlap = 0.15
+
+    best_overlap = 0.0
+    for row in results or []:
+        content = (row.get("content") or "")[:1600]
+        content_tokens = _tokenize_text(content)
+        if not content_tokens:
+            continue
+        overlap = len(query_tokens & content_tokens) / max(1, len(query_tokens))
+        if overlap > best_overlap:
+            best_overlap = overlap
+
+    relevant = best_overlap >= min_overlap
+    hint = "student_response_prompt" if (is_responding_to_question and is_conceptual) else "normal"
+    return relevant, hint
+
+
 def _is_retrieval_relevant(query: str, results, min_overlap: float = 0.22) -> bool:
     query_tokens = _tokenize_text(query)
     if not query_tokens:
@@ -261,11 +344,32 @@ def socratic_agent(query, retriever, history=None, user_id="faculty", allowed_so
     
     # Rejection Logic: Out of Scope
     if not results:
-        return {"reply": "This is outside the provided course material. I am restricted to the course context.", "citations": []}
+        # Check if student is providing a conceptual answer to a guiding question
+        if _is_response_to_guiding_question(query, history) and _is_conceptual_answer(query):
+            # Still return error but encourage them to provide reasoning
+            return {
+                "reply": "I appreciate your input! Can you help me understand your reasoning? How does that approach apply to the problem we're discussing?",
+                "citations": []
+            }
+        return {
+            "reply": "This seems outside the provided course material. I am restricted to the course context. Which exact topic or term from your uploaded notes should we focus on?",
+            "citations": []
+        }
 
     # Reject weak lexical matches that often cause repetitive, irrelevant replies.
-    if not _is_retrieval_relevant(query, results):
-        return {"reply": "This looks outside the current classroom material. Please ask from the uploaded course notes.", "citations": []}
+    is_relevant, relevance_hint = _is_retrieval_relevant_for_response(query, results, history)
+    
+    if not is_relevant:
+        # Check if student is providing a conceptual answer to a guiding question
+        if _is_response_to_guiding_question(query, history) and _is_conceptual_answer(query):
+            # Instead of rejecting, proceed to have tutor evaluate the answer
+            # by setting a special flag for the LLM prompt
+            pass  # Fall through to normal response generation
+        else:
+            return {
+                "reply": "This looks outside the current classroom material. Please ask from the uploaded course notes. Which chapter/topic from your notes should we use?",
+                "citations": []
+            }
 
     # 3. Build Context
     context = ""
@@ -284,9 +388,9 @@ def socratic_agent(query, retriever, history=None, user_id="faculty", allowed_so
 
     # CASE 1: Student is stuck
     if intent == "HELP_REQUEST" or _student_unable_to_answer(query, history):
-        instruction = "They are stuck. Using ONLY this context, briefly explain the concept in 2 sentences, then ask a simple 'Yes/No' or 'A/B' choice question."
+        instruction = "The student is stuck. DO NOT give them the direct explanation. Instead, ask a single, basic guiding question (like a 'Yes/No' or finding a given variable) to slowly converge toward the answer."
         if _consecutive_unable_attempts(query, history) >= 2:
-            instruction = "They have been unable to answer consecutive guiding questions. Give one tiny worked setup step (no final numeric answer), then ask one simple check question."
+            instruction = "The student is repeatedly stuck. Provide a minimal scaffolding hint, then ask them to try the next tiny step themselves."
 
         scaffold_prompt = f"""{SYSTEM_PROMPT}
 The student says: "{query}"
@@ -302,9 +406,25 @@ Recent dialogue: {_format_recent_history(history)}
 
     # 4. Socratic Generation
     is_attempt = _student_attempted_solution(query, history)
+    is_responding_to_question = _is_response_to_guiding_question(query, history)
+    is_conceptual = _is_conceptual_answer(query)
+    
     guidance = "Level 2 (Evaluate their attempt first, then provide next hint)" if is_attempt else "Level 1"
     
+    # Special instruction if student is providing a conceptual answer to a guiding question
+    answer_evaluation_instruction = ""
+    if is_responding_to_question and is_conceptual:
+        answer_evaluation_instruction = """
+IMPORTANT: The student appears to be providing a conceptual answer to your guiding question.
+Follow these steps:
+1. First, evaluate if their answer is conceptually sound or on the right track
+2. If it's correct or partially correct, APPRECIATE it: "Correct!" or "Exactly right!" or "Great observation!"
+3. Then ask a follow-up guiding question to deepen their understanding
+4. NEVER dismiss correct or partially-correct answers as "outside classroom material"
+"""
+    
     full_prompt = f"""{SYSTEM_PROMPT}
+{answer_evaluation_instruction}
 
 Current required hint level: {guidance}
 Recent conversation:

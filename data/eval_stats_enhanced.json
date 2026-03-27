@@ -1,0 +1,16 @@
+{
+  "avg_retrieval_precision": 0.5396825396825397,
+  "avg_retrieval_recall": 0.9523809523809523,
+  "avg_retrieval_f1": 0.6761904761904763,
+  "avg_semantic_similarity": 0.37371650409130813,
+  "avg_ndcg": 0.6761904761904763,
+  "citation_pass_rate": 0.8095238095238095,
+  "question_pass_rate": 0.8095238095238095,
+  "content_pass_rate": 1.0,
+  "no_direct_answer_pass_rate": 1.0,
+  "avg_pedagogical_score": 0.9047619047619048,
+  "avg_keyword_recall": 0.6666666666666666,
+  "avg_response_length": 222.71428571428572,
+  "total_questions": 21,
+  "evaluation_timestamp": "2026-03-28T01:40:25.085817"
+}

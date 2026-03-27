@@ -2,8 +2,8 @@ import "./globals.css";
 import AnimatedLayout from "../components/AnimatedLayout";
 
 export const metadata = {
-  title: "ContextAI — Course-Aware Tutor",
-  description: "A course-aware AI tutor with Socratic guidance",
+  title: "EDUXA | Empowering Students to Think, Not Just Retrieve",
+  description: "A modern Socratic AI tutor that guides students to the answer without giving it away.",
 };
 
 export default function RootLayout({ children }) {

@@ -386,6 +386,20 @@ async def dashboard_stats(classroom_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=403, detail="Not authorized")
     return get_dashboard_stats(classroom_id)
 
+@app.get("/api/dashboard/topic-matrix")
+async def topic_matrix(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    from src.database import get_topic_correlation_matrix
+    return get_topic_correlation_matrix(classroom_id)
+
+@app.get("/api/dashboard/topic-clusters")
+async def topic_clusters(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    from src.database import get_topic_clusters
+    return {"clusters": get_topic_clusters(classroom_id)}
+
 @app.get("/api/dashboard/student-insights")
 async def student_insights(classroom_id: str, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "faculty":

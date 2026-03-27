@@ -4,25 +4,25 @@
    DESIGN TOKENS
 ───────────────────────────────────────── */
 :root {
-  --bg-color:        #060c17;
-  --panel-bg:        rgba(10, 20, 40, 0.72);
-  --panel-border:    rgba(255, 255, 255, 0.07);
-  --panel-border-hi: rgba(79, 124, 255, 0.45);
+  --bg-color:        #040914;
+  --panel-bg:        rgba(6, 12, 28, 0.65);
+  --panel-border:    rgba(255, 255, 255, 0.06);
+  --panel-border-hi: rgba(0, 208, 255, 0.45);
   --text-primary:    #e8eeff;
   --text-secondary:  #5a6a8a;
   --text-muted:      #3a4a6a;
-  --accent-color:    #4f7cff;
-  --accent-hover:    #6b93ff;
-  --accent-glow:     rgba(79, 124, 255, 0.30);
-  --accent-subtle:   rgba(79, 124, 255, 0.10);
-  --user-msg:        rgba(79, 124, 255, 0.14);
-  --bot-msg:         rgba(10, 20, 40, 0.85);
+  --accent-color:    #00d0ff;
+  --accent-hover:    #00e5ff;
+  --accent-glow:     rgba(0, 208, 255, 0.45);
+  --accent-subtle:   rgba(0, 208, 255, 0.12);
+  --user-msg:        rgba(0, 208, 255, 0.10);
+  --bot-msg:         rgba(15, 25, 45, 0.85);
   --danger:          #ff4f6b;
   --danger-subtle:   rgba(255, 79, 107, 0.12);
   --success:         #00e5a0;
   --success-subtle:  rgba(0, 229, 160, 0.12);
-  --purple:          #8b5cf6;
-  --purple-subtle:   rgba(139, 92, 246, 0.12);
+  --purple:          #b026ff;
+  --purple-subtle:   rgba(176, 38, 255, 0.15);
 
   --font-display: 'Syne', sans-serif;
   --font-body:    'DM Sans', sans-serif;
@@ -52,9 +52,9 @@ body {
   font-family: var(--font-body);
   background-color: var(--bg-color);
   background-image:
-    radial-gradient(ellipse 70% 55% at 5%  90%, rgba(79, 124, 255, 0.13) 0%, transparent 60%),
-    radial-gradient(ellipse 55% 45% at 95%  8%, rgba(139, 92, 246, 0.11) 0%, transparent 55%),
-    radial-gradient(ellipse 40% 35% at 50% 50%, rgba(0, 229, 160, 0.04) 0%, transparent 70%);
+    radial-gradient(ellipse 80% 60% at 10% 90%, rgba(0, 208, 255, 0.08) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 50% at 90% 10%, rgba(176, 38, 255, 0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 50% 50%, rgba(0, 208, 255, 0.03) 0%, transparent 80%);
   color: var(--text-primary);
   height: 100vh;
   overflow: hidden;
@@ -137,7 +137,13 @@ body::before {
   font-weight: 800;
   letter-spacing: -0.02em;
   margin-bottom: 28px;
-  background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 60%, #38bdf8 100%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-text {
+  background: linear-gradient(135deg, #b026ff 0%, #00d0ff 80%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

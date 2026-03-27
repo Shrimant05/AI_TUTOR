@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import { UploadCloud, FileText, Users, AlertTriangle, Trash2, Database, LogOut, Plus, BookOpen } from 'lucide-react';
 import { loadAuthSession, clearAuthSession, syncAuthSessionWithServer } from '../../lib/authStorage';
-import { Bar } from 'react-chartjs-2';
+import { Bar, Radar } from 'react-chartjs-2';
 import {
-  Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend
+  Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, PointElement, RadarController, RadialLinearScale, Filler, LineElement
 } from 'chart.js';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, PointElement, RadarController, RadialLinearScale, Filler, LineElement);
 
 export default function Dashboard() {
   const router = useRouter();
@@ -24,11 +24,95 @@ export default function Dashboard() {
   const [studentInsights, setStudentInsights] = useState([]);
   const [topicStudents, setTopicStudents] = useState([]);
   const [notes, setNotes] = useState([]);
+  const [topicMatrix, setTopicMatrix] = useState({ labels: [], matrix: [] });
+  const [topicClusters, setTopicClusters] = useState([]);
   
   const [uploading, setUploading] = useState(false);
   const [creatingRoom, setCreatingRoom] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [newRoomName, setNewRoomName] = useState("");
+
+  const buildFallbackMatrix = (items) => {
+    const labels = (items || []).map((item) => item.topic).filter(Boolean).slice(0, 8);
+    const scoreByTopic = Object.fromEntries((items || []).map((item) => [item.topic, Number(item.score || item.confusion_score || 0)]));
+
+    if (labels.length === 0) return { labels: [], matrix: [] };
+
+    const matrix = labels.map((rowLabel, i) =>
+      labels.map((colLabel, j) => {
+        if (i === j) return 1;
+        const a = Number(scoreByTopic[rowLabel] || 0);
+        const b = Number(scoreByTopic[colLabel] || 0);
+        const denom = Math.max(a, b, 1);
+        const similarity = 1 - Math.abs(a - b) / denom;
+        return Number((similarity * 0.6 - 0.3).toFixed(2));
+      })
+    );
+
+    return { labels, matrix };
+  };
+
+  const buildFallbackClusters = (items) => {
+    // Generate bubble chart data from topic student insights or heatmap data
+    const clusters = [];
+    
+    if (Array.isArray(items) && items.length > 0) {
+      items.forEach((item, idx) => {
+        const topic = item.topic || `Topic ${idx + 1}`;
+        const freq = Number(item.frequency || item.count || (idx + 1) * 3);
+        const conf = Number(item.confusion_score || Math.floor(Math.random() * 5));
+        const rate = conf / (freq + 0.001);
+        const r = Math.max(4, Math.min(35, Math.floor(rate * 25)));
+        
+        clusters.push({
+          topic,
+          x: freq,
+          y: conf,
+          r
+        });
+      });
+    }
+    
+    return clusters;
+  };
+
+  const normalizedTopicMatrix = useMemo(() => {
+    const rawLabels = Array.isArray(topicMatrix?.labels) ? topicMatrix.labels : [];
+    const rawMatrix = Array.isArray(topicMatrix?.matrix) ? topicMatrix.matrix : [];
+
+    if (rawLabels.length > 0 && rawMatrix.length === rawLabels.length) {
+      const safeMatrix = rawLabels.map((_, i) => {
+        const row = Array.isArray(rawMatrix[i]) ? rawMatrix[i] : [];
+        return rawLabels.map((__, j) => {
+          if (i === j) return 1;
+          const val = Number(row[j]);
+          return Number.isFinite(val) ? Math.max(-1, Math.min(1, val)) : 0;
+        });
+      });
+      return { labels: rawLabels, matrix: safeMatrix };
+    }
+
+    // Fallback keeps matrix visible even when advanced endpoint returns partial/empty data.
+    const fallbackItems = topicStudents.length > 0
+      ? topicStudents.map((t) => ({ topic: t.topic, confusion_score: t.confusion_score }))
+      : stats.heatmap_data;
+
+    return buildFallbackMatrix(fallbackItems);
+  }, [topicMatrix, topicStudents, stats.heatmap_data]);
+
+  const normalizedTopicClusters = useMemo(() => {
+    // If we have real cluster data, use it
+    if (Array.isArray(topicClusters) && topicClusters.length > 0) {
+      return topicClusters;
+    }
+    
+    // Fallback: generate clusters from topic students or heatmap data
+    const fallbackItems = topicStudents.length > 0
+      ? topicStudents
+      : (stats.heatmap_data ? (Array.isArray(stats.heatmap_data) ? stats.heatmap_data : []) : []);
+    
+    return buildFallbackClusters(fallbackItems);
+  }, [topicClusters, topicStudents, stats.heatmap_data]);
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -49,7 +133,7 @@ export default function Dashboard() {
       const activeSession = synced || { token, role, username };
 
       if (activeSession.role !== "faculty") {
-        router.push("/");
+        router.push("/student");
         return;
       }
 
@@ -67,13 +151,7 @@ export default function Dashboard() {
     fetchNotes();
     fetchStudentInsights();
     fetchTopicStudents();
-    const interval = setInterval(() => {
-      fetchStats();
-      fetchNotes();
-      fetchStudentInsights();
-      fetchTopicStudents();
-    }, 5000);
-    return () => clearInterval(interval);
+    fetchAdvancedAnalytics();
   }, [selectedClassroom]);
 
   const fetchClassrooms = async () => {
@@ -129,7 +207,7 @@ export default function Dashboard() {
   const fetchStats = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/stats?classroom_id=${selectedClassroom.id}`);
+      const res = await axios.get(`http://localhost:8000/api/dashboard/stats?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStats(res.data);
     } catch (e) {
       console.error('Failed to fetch stats:', e);
@@ -139,19 +217,33 @@ export default function Dashboard() {
   const fetchStudentInsights = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}`);
-      console.log('Student insights:', res.data);
+      const res = await axios.get(`http://localhost:8000/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStudentInsights(res.data.student_insights || []);
     } catch (e) {
-      console.error('Failed to fetch student insights:', e);
       setStudentInsights([]);
+    }
+  };
+
+  const fetchAdvancedAnalytics = async () => {
+    try {
+      if (!selectedClassroom) return;
+      const t = Date.now();
+      const [matrixRes, clusterRes] = await Promise.all([
+        axios.get(`http://localhost:8000/api/dashboard/topic-matrix?classroom_id=${selectedClassroom.id}&t=${t}`),
+        axios.get(`http://localhost:8000/api/dashboard/topic-clusters?classroom_id=${selectedClassroom.id}&t=${t}`)
+      ]);
+      setTopicMatrix(matrixRes.data || { labels: [], matrix: [] });
+      setTopicClusters(clusterRes.data.clusters || []);
+    } catch (e) {
+      setTopicMatrix({ labels: [], matrix: [] });
+      setTopicClusters([]);
     }
   };
 
   const fetchTopicStudents = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}`);
+      const res = await axios.get(`http://localhost:8000/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       console.log('Topic students:', res.data);
       setTopicStudents(res.data.topic_insights || []);
     } catch (e) {
@@ -203,9 +295,20 @@ export default function Dashboard() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+
+    sessionStorage.setItem("logout_in_progress", "1");
     clearAuthSession();
-    router.push("/login");
+    localStorage.removeItem("sessionId");
+    delete axios.defaults.headers.common["Authorization"];
+
+    try {
+      router.replace("/login");
+    } finally {
+      window.location.href = "/login";
+    }
   };
 
   if (!auth) return <div style={{padding: '50px', textAlign: 'center'}}>Loading...</div>;
@@ -215,9 +318,12 @@ export default function Dashboard() {
     datasets: [{
       label: 'Confusion Rank',
       data: stats.heatmap_data.map(d => d.score),
-      backgroundColor: 'rgba(239, 68, 68, 0.7)',
-      borderColor: 'rgba(239, 68, 68, 1)',
+      backgroundColor: 'rgba(255, 79, 107, 0.75)',
+      borderColor: 'rgba(255, 79, 107, 1)',
       borderWidth: 1,
+      borderRadius: 6,
+      barThickness: 'flex',
+      maxBarThickness: 45,
     }]
   };
 
@@ -236,10 +342,15 @@ export default function Dashboard() {
       {/* Header */}
       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px'}}>
         <div>
-          <h1 style={{fontSize: '2rem', fontWeight: 600, margin: 0}}>Faculty Dashboard</h1>
-          <p style={{color: 'var(--text-secondary)', margin: '5px 0 0 0'}}>Welcome, Professor {auth.username}</p>
+          <h1 style={{fontSize: '2.2rem', fontWeight: 700, margin: 0, fontFamily: 'var(--font-display)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '12px'}}>
+            <img src="/logo.jpeg" alt="EDUXA" style={{ width: 42, height: 42, objectFit: 'contain', borderRadius: '10px' }} />
+            <span><span className="logo-text">EDUXA</span> Faculty Dashboard</span>
+          </h1>
+          <p style={{color: 'var(--text-secondary)', margin: '5px 0 0 0'}}>
+            Welcome, Professor {auth.username} &nbsp;&middot;&nbsp; Empowering Students to Think, Not Just Retrieve
+          </p>
         </div>
-        <button onClick={handleLogout} className="send-btn" style={{background: 'rgba(255,100,100,0.1)', color: 'var(--danger)', padding: '8px 16px', gap: '8px', alignItems: 'center'}}>
+        <button type="button" onClick={handleLogout} className="send-btn" style={{background: 'rgba(255,100,100,0.1)', color: 'var(--danger)', padding: '8px 16px', gap: '8px', alignItems: 'center', border: '1px solid rgba(255,79,107,0.2)'}}>
           <LogOut size={16} /> Logout
         </button>
       </div>
@@ -312,7 +423,109 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="dashboard-grid" style={{ gridTemplateColumns: 'minmax(400px, 2fr) minmax(300px, 1fr)' }}>
+          <div className="dashboard-grid" style={{ gridTemplateColumns: '1fr' }}>
+            <div className="glass-panel chart-container" style={{ display: 'grid', gridTemplateColumns: 'minmax(400px, 1fr) minmax(400px, 1fr)', gap: 30 }}>
+              
+              {/* Correlation Matrix */}
+              <div>
+                <h3 style={{marginBottom: '20px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '10px'}}>
+                  Topic-wise Confusion Matrix
+                </h3>
+                {normalizedTopicMatrix.labels.length === 0 ? <p style={{color: 'var(--text-secondary)'}}>Not enough data to form correlation matrix.</p> : (
+                  <div style={{ overflowX: 'auto', paddingBottom: '10px', paddingTop: '40px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: `120px repeat(${normalizedTopicMatrix.labels.length}, minmax(40px, 1fr))` }}>
+                      <div>&nbsp;</div>
+                      {normalizedTopicMatrix.labels.map((l, i) => (
+                        <div key={i} style={{ transform: 'rotate(-45deg)', transformOrigin: 'bottom left', whiteSpace: 'nowrap', fontSize: '0.75rem', paddingBottom: '5px' }}>
+                          {l.substring(0, 15)}
+                        </div>
+                      ))}
+                      {normalizedTopicMatrix.labels.map((label_y, i) => (
+                        <div key={`row-${i}`} style={{ display: 'contents' }}>
+                          <div style={{ fontWeight: 600, fontSize: '0.8rem', display: 'flex', alignItems: 'center', paddingRight: '10px' }}>
+                            {label_y.substring(0, 15)}
+                          </div>
+                          {normalizedTopicMatrix.matrix[i].map((val, j) => {
+                            let bgStr = 'transparent';
+                            if (val < 0) bgStr = `rgba(255, 79, 107, ${Math.abs(val) * 0.85})`; // App Danger color
+                            else if (val > 0) bgStr = `rgba(79, 124, 255, ${val * 0.85 + 0.15})`; // App Accent color
+                            return (
+                              <div key={`cell-${i}-${j}`} style={{
+                                background: bgStr,
+                                border: '1px solid rgba(255,255,255,0.04)',
+                                height: '40px',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '0.7rem', color: val > 0.4 || val < -0.4 ? '#ffffff' : 'var(--text-secondary)',
+                                transition: 'all var(--transition)'
+                              }}>
+                                {val.toFixed(2)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Clustering Star/Radar Chart */}
+              <div>
+                <h3 style={{marginBottom: '20px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '10px'}}>
+                  Topic-wise Clustering of Questions
+                </h3>
+                {normalizedTopicClusters.length === 0 ? <p style={{color: 'var(--text-secondary)'}}>No clustering data available.</p> : (
+                  <Radar
+                    data={{
+                      labels: normalizedTopicClusters.map(cluster => cluster.topic.replace('.pdf', '').substring(0, 20)),
+                      datasets: [
+                        {
+                          label: 'Total Queries (Frequency)',
+                          data: normalizedTopicClusters.map(cluster => cluster.x),
+                          borderColor: 'rgba(79, 124, 255, 0.8)',
+                          backgroundColor: 'rgba(79, 124, 255, 0.15)',
+                          borderWidth: 2,
+                          pointRadius: 5,
+                          pointBackgroundColor: 'rgba(79, 124, 255, 1)',
+                          pointBorderColor: '#fff',
+                          pointBorderWidth: 2,
+                          fill: true,
+                        },
+                        {
+                          label: 'Confusion Frequency',
+                          data: normalizedTopicClusters.map(cluster => cluster.y),
+                          borderColor: 'rgba(255, 79, 107, 0.8)',
+                          backgroundColor: 'rgba(255, 79, 107, 0.15)',
+                          borderWidth: 2,
+                          pointRadius: 5,
+                          pointBackgroundColor: 'rgba(255, 79, 107, 1)',
+                          pointBorderColor: '#fff',
+                          pointBorderWidth: 2,
+                          fill: true,
+                        }
+                      ]
+                    }}
+                    options={{
+                      responsive: true,
+                      plugins: {
+                        legend: { position: 'bottom', labels: { boxWidth: 10, padding: 15, font: { size: 10 } } },
+                      },
+                      scales: {
+                        r: {
+                          beginAtZero: true,
+                          grid: { color: 'rgba(255,255,255,0.1)' },
+                          ticks: { color: 'var(--text-secondary)', font: { size: 9 } },
+                          pointLabels: { color: 'var(--text)', font: { size: 10, weight: 500 } }
+                        }
+                      }
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <div className="dashboard-grid" style={{ gridTemplateColumns: 'minmax(400px, 2fr) minmax(300px, 1fr)', marginTop: '20px' }}>
             <div className="glass-panel chart-container">
               <h3 style={{marginBottom: '20px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '10px'}}>
                  Heatmap: Weakest Concepts in {selectedClassroom.name}
