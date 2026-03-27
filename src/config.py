@@ -29,6 +29,7 @@ DB_DIR = os.path.join(BASE_DIR, "data", "vector_store")
 # MongoDB Atlas Settings (auth + chat history)
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 MONGODB_DB = os.environ.get("MONGODB_DB", "ai_tutor_auth")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
 
 def get_classroom_vector_db_path(classroom_id: str) -> str:

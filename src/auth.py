@@ -4,8 +4,8 @@ import uuid
 import jwt
 import bcrypt
 from passlib.context import CryptContext
-from fastapi import Request, HTTPException, Security
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Request, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer
 from .mongo_auth import get_auth_user_by_id, is_session_active
 
 SECRET_KEY = os.environ.get("JWT_SECRET", "super-secret-key-that-should-be-in-env")
@@ -15,16 +15,21 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
 # Use pbkdf2_sha256 for new hashes to avoid runtime incompatibilities
 # between passlib and newer bcrypt backend versions.
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-security = HTTPBearer()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
 def verify_password(plain_password, hashed_password):
+    if not hashed_password:
+        return False
     # Backward compatibility for existing bcrypt hashes already in DB.
     if hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
         try:
             return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
         except Exception:
             return False
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        return False
 
 def get_password_hash(password):
     return pwd_context.hash(password)
@@ -50,8 +55,7 @@ def decode_access_token(token: str):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
-    token = credentials.credentials
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     payload = decode_access_token(token)
     user_id: str = payload.get("sub")
     role: str = payload.get("role")

@@ -221,6 +221,10 @@ export default function Dashboard() {
     }]
   };
 
+  const studentNameById = Object.fromEntries(
+    (studentInsights || []).map((student) => [student.user_id, student.student_name])
+  );
+
   return (
     <div style={{maxWidth: '1200px', margin: '0 auto', width: '100%', paddingBottom: '50px'}}>
       
@@ -380,7 +384,9 @@ export default function Dashboard() {
                   <ul style={{listStyle: 'none', padding: 0, margin: 0}}>
                     {stats.student_activity.map((s, i) => (
                       <li key={i} style={{padding: '10px 0', borderBottom: 'i px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between'}}>
-                        <span>User Hash #{s.user.substring(0,8)}</span>
+                        <span>
+                          {s.student_name || studentNameById[s.user_id] || studentNameById[s.user] || (s.user ? `User Hash #${s.user.substring(0,8)}` : s.user_id)}
+                        </span>
                         <span style={{color: 'var(--text-secondary)'}}>{s.count} queries</span>
                       </li>
                     ))}

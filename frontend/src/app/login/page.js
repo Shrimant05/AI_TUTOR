@@ -1,16 +1,55 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import { loadAuthSession, saveAuthSession, syncAuthSessionWithServer, clearAuthSession } from '../../lib/authStorage';
 
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+
 export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState("");
   const [error, setError] = useState("");
   const [checkingSession, setCheckingSession] = useState(true);
+  const [googleReady, setGoogleReady] = useState(false);
   const router = useRouter();
+  const authInputsRef = useRef({ username: "", role: "" });
+
+  useEffect(() => {
+    authInputsRef.current = { username, role };
+  }, [username, role]);
+
+  const finalizeLogin = (authData) => {
+    saveAuthSession({
+      token: authData.access_token,
+      role: authData.role,
+      username: authData.username,
+    });
+
+    if (authData.role === "faculty") {
+      router.push("/dashboard");
+    } else {
+      router.push("/");
+    }
+  };
+
+  const handleGoogleCredential = async (credential) => {
+    const selectedName = (authInputsRef.current.username || "").trim();
+    const selectedRole = (authInputsRef.current.role || "").trim().toLowerCase();
+
+    try {
+      const res = await axios.post("http://localhost:8000/api/auth/google", {
+        id_token: credential,
+        role: ["student", "faculty"].includes(selectedRole) ? selectedRole : undefined,
+        username: selectedName || undefined,
+      });
+      finalizeLogin(res.data);
+    } catch (err) {
+      setError(err.response?.data?.detail || "Google sign-in failed");
+    }
+  };
 
   useEffect(() => {
     const redirectIfAuthenticated = async () => {
@@ -44,6 +83,49 @@ export default function Login() {
     redirectIfAuthenticated();
   }, [router]);
 
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+
+    const scriptId = "google-identity-service";
+    let script = document.getElementById(scriptId);
+
+    const renderGoogleButton = () => {
+      if (!window.google?.accounts?.id) return;
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: (response) => {
+          if (response?.credential) {
+            handleGoogleCredential(response.credential);
+          }
+        },
+      });
+
+      const container = document.getElementById("google-login-btn");
+      if (container) {
+        container.innerHTML = "";
+        window.google.accounts.id.renderButton(container, {
+          theme: "outline",
+          size: "large",
+          width: "320",
+          text: "signin_with",
+        });
+        setGoogleReady(true);
+      }
+    };
+
+    if (!script) {
+      script = document.createElement("script");
+      script.id = scriptId;
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.onload = renderGoogleButton;
+      document.body.appendChild(script);
+    } else {
+      renderGoogleButton();
+    }
+  }, [router]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
@@ -52,22 +134,27 @@ export default function Login() {
       setError("Username is required");
       return;
     }
+    if (!["student", "faculty"].includes((role || "").toLowerCase())) {
+      setError("Please select your role");
+      return;
+    }
     try {
-      const res = await axios.post("http://localhost:8000/api/auth/login", {
-        username: normalizedUsername,
-        password
+      const form = new URLSearchParams();
+      form.append("username", normalizedUsername);
+      form.append("password", password);
+
+      const res = await axios.post("http://localhost:8000/api/auth/token", form, {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
       });
-      saveAuthSession({
-        token: res.data.access_token,
-        role: res.data.role,
-        username: res.data.username,
-      });
-      
-      if (res.data.role === "faculty") {
-        router.push("/dashboard");
-      } else {
-        router.push("/");
+
+      if ((res.data.role || "").toLowerCase() !== role.toLowerCase()) {
+        setError(`This account is registered as ${res.data.role}. Please choose the correct role.`);
+        return;
       }
+
+      finalizeLogin(res.data);
     } catch (err) {
       setError(err.response?.data?.detail || "Login failed");
     }
@@ -94,6 +181,19 @@ export default function Login() {
             />
           </div>
           <div>
+            <label style={{display: 'block', marginBottom: '8px'}}>I am a...</label>
+            <select
+              className="chat-input"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              style={{cursor: 'pointer'}}
+            >
+              <option value="" disabled>Select role</option>
+              <option value="student">Student</option>
+              <option value="faculty">Faculty Member</option>
+            </select>
+          </div>
+          <div>
             <label style={{display: 'block', marginBottom: '8px'}}>Password</label>
             <input 
               type="password" 
@@ -109,9 +209,32 @@ export default function Login() {
             Sign In
           </button>
         </form>
+
+        <div style={{marginTop: '16px', marginBottom: '6px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem'}}>
+          or
+        </div>
+        {GOOGLE_CLIENT_ID ? (
+          <div style={{display: 'flex', justifyContent: 'center'}}>
+            <div id="google-login-btn" style={{minHeight: '42px'}} />
+          </div>
+        ) : (
+          <p style={{margin: 0, textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem'}}>
+            Set NEXT_PUBLIC_GOOGLE_CLIENT_ID to enable Google sign-in.
+          </p>
+        )}
+        {GOOGLE_CLIENT_ID && !googleReady && (
+          <p style={{margin: '8px 0 0 0', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem'}}>
+            Loading Google sign-in...
+          </p>
+        )}
+        {GOOGLE_CLIENT_ID && (
+          <p style={{margin: '8px 0 0 0', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem'}}>
+            Existing Google users sign in with saved profile; new Google users must provide name and role.
+          </p>
+        )}
         
         <div style={{marginTop: '20px', textAlign: 'center', fontSize: '0.9rem'}}>
-          <p>Don't have an account? <a href="/register" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Register</a></p>
+          <p>Don&apos;t have an account? <a href="/register" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Register</a></p>
         </div>
       </div>
     </div>

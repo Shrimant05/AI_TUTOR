@@ -5,6 +5,20 @@ from .config import BASE_DIR
 
 DB_PATH = os.path.join(BASE_DIR, "data", "app_logs.db")
 
+
+def _resolve_student_name(user_id: str) -> str:
+    """Resolve student name from auth store with a safe fallback."""
+    try:
+        from .mongo_auth import get_auth_user_by_id
+
+        user_data = get_auth_user_by_id(user_id)
+        if user_data and user_data.get("username"):
+            return user_data["username"]
+    except Exception:
+        pass
+
+    return f"Student_{user_id[:8]}" if len(user_id) >= 8 else f"Std_{user_id}"
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -215,7 +229,14 @@ def get_dashboard_stats(classroom_id):
     top_confusion_topics = [{"topic": row[0], "score": row[1] + 1} for row in cursor.fetchall()]
     
     cursor.execute("SELECT user_id, COUNT(*) as query_count FROM queries WHERE classroom_id = ? GROUP BY user_id ORDER BY query_count DESC LIMIT 10", (classroom_id,))
-    student_activity = [{"user": row[0], "count": row[1]} for row in cursor.fetchall()]
+    student_activity = [
+        {
+            "user_id": row[0],
+            "student_name": _resolve_student_name(row[0]),
+            "count": row[1],
+        }
+        for row in cursor.fetchall()
+    ]
     
     conn.close()
     
@@ -248,14 +269,7 @@ def get_student_query_insights(classroom_id):
     
     student_insights = []
     for user_id, total_q, doubts, helps in results:
-        # Try to get student name from MongoDB with timeout
-        try:
-            from .mongo_auth import get_auth_user_by_id
-            user_data = get_auth_user_by_id(user_id)
-            student_name = user_data.get("username", f"Student_{user_id[:8]}") if user_data else f"Student_{user_id[:8]}"
-        except:
-            # Fallback if MongoDB not available
-            student_name = f"Student_{user_id[:8]}" if len(user_id) >= 8 else f"Std_{user_id}"
+        student_name = _resolve_student_name(user_id)
         
         student_insights.append({
             "user_id": user_id,
@@ -299,13 +313,7 @@ def get_topic_wise_student_doubts(classroom_id):
         # Get top struggling students (those with most doubts in classroom)
         struggling_students = []
         for student_id in doubt_students[:5]:  # Top 5 students with doubts
-            try:
-                from .mongo_auth import get_auth_user_by_id
-                user_data = get_auth_user_by_id(student_id)
-                student_name = user_data.get("username", f"Student_{student_id[:8]}") if user_data else f"Student_{student_id[:8]}"
-            except:
-                # Fallback if MongoDB not available
-                student_name = f"Student_{student_id[:8]}" if len(student_id) >= 8 else f"Std_{student_id}"
+            student_name = _resolve_student_name(student_id)
             
             struggling_students.append({
                 "student_id": student_id,
@@ -326,14 +334,7 @@ def get_student_doubts_by_topic(classroom_id, student_user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Get student name from MongoDB with fallback
-    try:
-        from .mongo_auth import get_auth_user_by_id
-        user_data = get_auth_user_by_id(student_user_id)
-        student_name = user_data.get("username", f"Student_{student_user_id[:8]}") if user_data else f"Student_{student_user_id[:8]}"
-    except:
-        # Fallback if MongoDB not available
-        student_name = f"Student_{student_user_id[:8]}" if len(student_user_id) >= 8 else f"Std_{student_user_id}"
+    student_name = _resolve_student_name(student_user_id)
     
     # Get queries where this student had doubts
     cursor.execute('''

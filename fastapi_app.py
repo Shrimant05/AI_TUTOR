@@ -1,14 +1,21 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import shutil
+import io
+import zipfile
 import random
 import string
 import re
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 from src.ingest import IngestionPipeline
 from src.retriever import HybridParentRetriever
@@ -22,10 +29,12 @@ from src.database import (
 )
 from src.mongo_auth import (
     init_mongo_auth, create_auth_user, get_auth_user_by_username,
-    get_auth_user_by_id, create_session, revoke_session, update_last_login,
+    get_auth_user_by_id, get_auth_user_by_google_sub, create_google_auth_user,
+    create_session, revoke_session, update_last_login,
     save_chat_history, get_chat_histories
 )
 from src.config import DATA_DIR, normalize_classroom_id
+from src.config import GOOGLE_CLIENT_ID
 from src.main import _student_unable_to_answer, _student_attempted_solution
 from src.auth import get_password_hash, verify_password, create_access_token, get_current_user
 
@@ -57,6 +66,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+    role: Optional[str] = None
+    username: Optional[str] = None
+
+
 def validate_auth_input(username: str, password: str):
     normalized_username = (username or "").strip()
     if len(normalized_username) < 3 or len(normalized_username) > 64:
@@ -67,7 +82,37 @@ def validate_auth_input(username: str, password: str):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     return normalized_username
 
+
+def validate_username_only(username: str):
+    normalized_username = (username or "").strip()
+    if len(normalized_username) < 3 or len(normalized_username) > 64:
+        raise HTTPException(status_code=400, detail="Username must be 3-64 characters")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", normalized_username):
+        raise HTTPException(status_code=400, detail="Username contains invalid characters")
+    return normalized_username
+
 # --- Auth Endpoints ---
+
+
+def _issue_session_token(auth_user: dict, request: Request):
+    token_data = create_access_token(data={
+        "sub": str(auth_user["_id"]),
+        "role": auth_user["role"],
+    })
+    create_session(
+        user_id=str(auth_user["_id"]),
+        jti=token_data["jti"],
+        expires_at=token_data["expires_at"],
+        created_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", "")[:255],
+    )
+    update_last_login(str(auth_user["_id"]))
+    return {
+        "access_token": token_data["token"],
+        "token_type": "bearer",
+        "role": auth_user["role"],
+        "username": auth_user["username"],
+    }
 
 @app.post("/api/auth/register")
 def register(req: RegisterRequest):
@@ -95,25 +140,79 @@ def login(req: LoginRequest, request: Request):
     if not auth_user or not auth_user.get("is_active", False) or not verify_password(req.password, auth_user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token_data = create_access_token(data={
-        "sub": str(auth_user["_id"]),
-        "role": auth_user["role"],
-    })
-    create_session(
-        user_id=str(auth_user["_id"]),
-        jti=token_data["jti"],
-        expires_at=token_data["expires_at"],
-        created_ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent", "")[:255],
-    )
-    update_last_login(str(auth_user["_id"]))
+    return _issue_session_token(auth_user, request)
 
-    return {
-        "access_token": token_data["token"],
-        "token_type": "bearer",
-        "role": auth_user["role"],
-        "username": auth_user["username"],
-    }
+
+@app.post("/api/auth/token")
+def oauth_token(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None):
+    username = validate_auth_input(form_data.username, form_data.password)
+    auth_user = get_auth_user_by_username(username)
+
+    if not auth_user or not auth_user.get("is_active", False) or not verify_password(form_data.password, auth_user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Keep response fields used by current frontend while remaining OAuth2-compatible.
+    if request is None:
+        raise HTTPException(status_code=500, detail="Request context unavailable")
+    return _issue_session_token(auth_user, request)
+
+
+@app.post("/api/auth/google")
+def google_auth(req: GoogleAuthRequest, request: Request):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID is not configured")
+
+    try:
+        id_info = id_token.verify_oauth2_token(req.id_token, google_requests.Request(), GOOGLE_CLIENT_ID)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    if id_info.get("iss") not in ["accounts.google.com", "https://accounts.google.com"]:
+        raise HTTPException(status_code=401, detail="Invalid token issuer")
+
+    google_sub = str(id_info.get("sub") or "").strip()
+    email = str(id_info.get("email") or "").strip()
+    if not google_sub:
+        raise HTTPException(status_code=400, detail="Google profile is missing required fields")
+
+    auth_user = get_auth_user_by_google_sub(google_sub)
+    if not auth_user:
+        requested_username = (req.username or "").strip()
+        requested_role = (req.role or "").strip().lower()
+
+        if requested_role not in ["faculty", "student"]:
+            raise HTTPException(status_code=400, detail="Role is required for first-time Google registration")
+        if not requested_username:
+            raise HTTPException(status_code=400, detail="Name is required for first-time Google registration")
+
+        display_name = validate_username_only(requested_username)
+        created = create_google_auth_user(
+            username=display_name,
+            role=requested_role,
+            google_sub=google_sub,
+            email=email,
+        )
+        if not created:
+            # Fallback when username is already taken; use deterministic suffix from Google subject.
+            unique_username = f"{display_name}_{google_sub[-6:]}"
+            if not create_google_auth_user(
+                username=unique_username,
+                role=requested_role,
+                google_sub=google_sub,
+                email=email,
+            ):
+                raise HTTPException(status_code=500, detail="Unable to create Google account")
+
+        auth_user = get_auth_user_by_google_sub(google_sub)
+
+    if not auth_user or not auth_user.get("is_active", False):
+        raise HTTPException(status_code=401, detail="User inactive or not found")
+
+    return _issue_session_token(auth_user, request)
 
 @app.get("/api/auth/me")
 def get_me(current_user: dict = Depends(get_current_user)):
@@ -139,6 +238,19 @@ class JoinClassroomRequest(BaseModel):
 # --- Classroom Endpoints ---
 def generate_join_code(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+
+def _allowed_classroom_ids(current_user: dict):
+    if current_user["role"] == "faculty":
+        return {str(c["id"]) for c in get_classrooms_for_faculty(current_user["user_id"])}
+    return {str(c["id"]) for c in get_classrooms_for_student(current_user["user_id"])}
+
+
+def _assert_classroom_access(classroom_id: str, current_user: dict):
+    normalized = normalize_classroom_id(classroom_id)
+    if normalized not in _allowed_classroom_ids(current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this classroom")
+    return normalized
 
 @app.post("/api/classrooms")
 def create_new_classroom(req: CreateClassroomRequest, current_user: dict = Depends(get_current_user)):
@@ -301,7 +413,7 @@ async def upload_notes(
     if current_user["role"] != "faculty":
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    classroom_id = normalize_classroom_id(classroom_id)
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
     class_dir = os.path.join(DATA_DIR, classroom_id)
     os.makedirs(class_dir, exist_ok=True)
     file_path = os.path.join(class_dir, file.filename)
@@ -316,13 +428,61 @@ async def upload_notes(
 
 @app.get("/api/notes")
 async def list_notes(classroom_id: str, current_user: dict = Depends(get_current_user)):
-    classroom_id = normalize_classroom_id(classroom_id)
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
     # Fallback to general data dir checking to prevent crash if not uploaded yet
     class_dir = os.path.join(DATA_DIR, classroom_id)
     files = []
+    notes_meta = []
     if os.path.exists(class_dir):
-        files = [f for f in os.listdir(class_dir) if f.endswith('.pdf') or f.endswith('.txt')]
-    return {"notes": files}
+        files = [f for f in os.listdir(class_dir) if f.lower().endswith('.pdf') or f.lower().endswith('.txt')]
+        for file_name in files:
+            file_path = os.path.join(class_dir, file_name)
+            ext = Path(file_name).suffix.lower()
+            notes_meta.append({
+                "name": file_name,
+                "size_bytes": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+                "file_type": "PDF" if ext == ".pdf" else "TXT" if ext == ".txt" else ext.replace(".", "").upper(),
+            })
+    return {"notes": files, "notes_meta": notes_meta}
+
+
+@app.get("/api/notes/{filename}/download")
+async def download_note(filename: str, classroom_id: str, current_user: dict = Depends(get_current_user)):
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
+    safe_filename = Path(filename).name
+    class_dir = os.path.join(DATA_DIR, classroom_id)
+    file_path = os.path.join(class_dir, safe_filename)
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(path=file_path, filename=safe_filename, media_type="application/octet-stream")
+
+
+@app.get("/api/notes/download-all")
+async def download_all_notes(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
+    class_dir = os.path.join(DATA_DIR, classroom_id)
+
+    if not os.path.exists(class_dir):
+        raise HTTPException(status_code=404, detail="No classroom materials found")
+
+    files = [f for f in os.listdir(class_dir) if f.lower().endswith('.pdf') or f.lower().endswith('.txt')]
+    if not files:
+        raise HTTPException(status_code=404, detail="No classroom materials found")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for file_name in files:
+            file_path = os.path.join(class_dir, file_name)
+            if os.path.isfile(file_path):
+                zip_file.write(file_path, arcname=file_name)
+
+    zip_buffer.seek(0)
+    headers = {
+        "Content-Disposition": f'attachment; filename="classroom_{classroom_id}_materials.zip"'
+    }
+    return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
 
 @app.delete("/api/notes/{filename}")
 async def delete_note(filename: str, classroom_id: str, current_user: dict = Depends(get_current_user)):
@@ -331,7 +491,7 @@ async def delete_note(filename: str, classroom_id: str, current_user: dict = Dep
 
     # Prevent path traversal and keep source_file key consistent with ingestion.
     safe_filename = Path(filename).name
-    classroom_id = normalize_classroom_id(classroom_id)
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
     class_dir = os.path.join(DATA_DIR, classroom_id)
     file_path = os.path.join(class_dir, safe_filename)
     

@@ -26,3 +26,4 @@ opentelemetry-semantic-conventions
 passlib[bcrypt]
 PyJWT
 pymongo
+google-auth

@@ -33,6 +33,7 @@ def init_mongo_auth():
         raise RuntimeError(f"Unable to connect to MongoDB Atlas: {exc}") from exc
 
     db.users.create_index([("username_lower", ASCENDING)], unique=True)
+    db.users.create_index([("google_sub", ASCENDING)], unique=True, sparse=True)
     db.sessions.create_index([("jti", ASCENDING)], unique=True)
     db.sessions.create_index([("expires_at", ASCENDING)])
     db.chat_histories.create_index([("user_id", ASCENDING), ("created_at", ASCENDING)])
@@ -70,6 +71,52 @@ def get_auth_user_by_id(user_id: str) -> Optional[dict]:
     except Exception:
         return None
     return db.users.find_one({"_id": oid})
+
+
+def get_auth_user_by_google_sub(google_sub: str) -> Optional[dict]:
+    db = _get_db()
+    return db.users.find_one({"google_sub": str(google_sub)})
+
+
+def create_google_auth_user(username: str, role: str, google_sub: str, email: str = "") -> bool:
+    db = _get_db()
+    doc = {
+        "username": username,
+        "username_lower": username.lower(),
+        "password_hash": "",
+        "role": role,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc),
+        "last_login_at": None,
+        "auth_provider": "google",
+        "google_sub": str(google_sub),
+        "email": email,
+    }
+    try:
+        db.users.insert_one(doc)
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+def update_google_user_profile(user_id: str, username: Optional[str] = None, role: Optional[str] = None):
+    db = _get_db()
+    updates = {}
+    if username:
+        updates["username"] = username
+        updates["username_lower"] = username.lower()
+    if role:
+        updates["role"] = role
+
+    if not updates:
+        return
+
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        return
+
+    db.users.update_one({"_id": oid, "google_sub": {"$exists": True}}, {"$set": updates})
 
 
 def update_last_login(user_id: str):
