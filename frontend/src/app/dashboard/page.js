@@ -21,6 +21,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState({
     total_queries: 0, active_students: 0, heatmap_data: [], student_activity: []
   });
+  const [studentInsights, setStudentInsights] = useState([]);
+  const [topicStudents, setTopicStudents] = useState([]);
   const [notes, setNotes] = useState([]);
   
   const [uploading, setUploading] = useState(false);
@@ -63,9 +65,13 @@ export default function Dashboard() {
     
     fetchStats();
     fetchNotes();
+    fetchStudentInsights();
+    fetchTopicStudents();
     const interval = setInterval(() => {
       fetchStats();
       fetchNotes();
+      fetchStudentInsights();
+      fetchTopicStudents();
     }, 5000);
     return () => clearInterval(interval);
   }, [selectedClassroom]);
@@ -125,7 +131,33 @@ export default function Dashboard() {
       if (!selectedClassroom) return;
       const res = await axios.get(`http://localhost:8000/api/dashboard/stats?classroom_id=${selectedClassroom.id}`);
       setStats(res.data);
-    } catch (e) {}
+    } catch (e) {
+      console.error('Failed to fetch stats:', e);
+    }
+  };
+
+  const fetchStudentInsights = async () => {
+    try {
+      if (!selectedClassroom) return;
+      const res = await axios.get(`http://localhost:8000/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}`);
+      console.log('Student insights:', res.data);
+      setStudentInsights(res.data.student_insights || []);
+    } catch (e) {
+      console.error('Failed to fetch student insights:', e);
+      setStudentInsights([]);
+    }
+  };
+
+  const fetchTopicStudents = async () => {
+    try {
+      if (!selectedClassroom) return;
+      const res = await axios.get(`http://localhost:8000/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}`);
+      console.log('Topic students:', res.data);
+      setTopicStudents(res.data.topic_insights || []);
+    } catch (e) {
+      console.error('Failed to fetch topic students:', e);
+      setTopicStudents([]);
+    }
   };
 
   const fetchNotes = async () => {
@@ -353,6 +385,69 @@ export default function Dashboard() {
                       </li>
                     ))}
                   </ul>
+                )}
+              </div>
+            </div>
+
+            {/* Student-wise Query Tracking */}
+            <div style={{marginTop: '30px'}}>
+              <h2 style={{fontSize: '1.3rem', fontWeight: 600, marginBottom: '15px'}}>📊 Student-wise Query Tracking</h2>
+              <div className="glass-panel" style={{padding: '20px', overflowX: 'auto'}}>
+                {studentInsights.length === 0 ? (
+                  <p style={{color: 'var(--text-secondary)'}}>No student queries yet.</p>
+                ) : (
+                  <table style={{width: '100%', borderCollapse: 'collapse'}}>
+                    <thead>
+                      <tr style={{borderBottom: '2px solid var(--panel-border)'}}>
+                        <th style={{textAlign: 'left', padding: '10px', fontWeight: 600}}>Student Name</th>
+                        <th style={{textAlign: 'center', padding: '10px', fontWeight: 600}}>Total Queries</th>
+                        <th style={{textAlign: 'center', padding: '10px', fontWeight: 600}}>Doubts</th>
+                        <th style={{textAlign: 'center', padding: '10px', fontWeight: 600}}>Help Requests</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {studentInsights.map((student, idx) => (
+                        <tr key={idx} style={{borderBottom: '1px solid var(--panel-border)'}}>
+                          <td style={{padding: '10px', fontSize: '0.9rem'}}>{student.student_name}</td>
+                          <td style={{textAlign: 'center', padding: '10px', color: 'var(--accent-color)', fontWeight: 600}}>{student.total_queries}</td>
+                          <td style={{textAlign: 'center', padding: '10px', color: student.doubts > 0 ? 'var(--danger)' : 'var(--success)'}}>{student.doubts}</td>
+                          <td style={{textAlign: 'center', padding: '10px', color: student.help_requests > 0 ? '#ff9800' : 'var(--success)'}}>{student.help_requests}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            {/* Topic-wise Student Doubts */}
+            <div style={{marginTop: '30px'}}>
+              <h2 style={{fontSize: '1.3rem', fontWeight: 600, marginBottom: '15px'}}>🎯 Topic-wise Student Doubts</h2>
+              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
+                {topicStudents.length === 0 ? (
+                  <p style={{color: 'var(--text-secondary)'}}>No topics with doubts yet.</p>
+                ) : (
+                  topicStudents.map((topic, idx) => (
+                    <div key={idx} className="glass-panel" style={{padding: '15px'}}>
+                      <h4 style={{margin: '0 0 10px 0', fontSize: '1rem', fontWeight: 600, color: 'var(--accent-color)'}}>{topic.topic}</h4>
+                      <div style={{fontSize: '0.85rem', marginBottom: '10px'}}>
+                        <div>Confusion Score: <span style={{fontWeight: 600, color: 'var(--danger)'}}>{topic.confusion_score}</span></div>
+                        <div>Total Queries: <span style={{fontWeight: 600}}>{topic.frequency}</span></div>
+                      </div>
+                      <div style={{fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--panel-border)'}}>
+                        <div style={{fontWeight: 600, marginBottom: '5px'}}>Students Struggling:</div>
+                        {topic.struggling_students.length === 0 ? (
+                          <p style={{margin: 0}}>No struggles recorded</p>
+                        ) : (
+                          <ul style={{listStyle: 'none', padding: 0, margin: 0}}>
+                            {topic.struggling_students.map((student, sidx) => (
+                              <li key={sidx} style={{padding: '3px 0'}}>• {student.student_name}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </div>

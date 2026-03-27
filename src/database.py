@@ -225,3 +225,153 @@ def get_dashboard_stats(classroom_id):
         "heatmap_data": top_confusion_topics,
         "student_activity": student_activity
     }
+
+# Student Insights
+def get_student_query_insights(classroom_id):
+    """Get detailed student-wise query tracking with student names"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get queries grouped by student with details
+    cursor.execute('''
+        SELECT user_id, COUNT(*) as total_queries, 
+               SUM(CASE WHEN is_unable_to_answer = 1 THEN 1 ELSE 0 END) as doubts_count,
+               SUM(CASE WHEN intent IN ('HELP_REQUEST', 'OFF_TOPIC') THEN 1 ELSE 0 END) as help_requests
+        FROM queries 
+        WHERE classroom_id = ? 
+        GROUP BY user_id 
+        ORDER BY total_queries DESC
+    ''', (classroom_id,))
+    
+    results = cursor.fetchall()
+    conn.close()
+    
+    student_insights = []
+    for user_id, total_q, doubts, helps in results:
+        # Try to get student name from MongoDB with timeout
+        try:
+            from .mongo_auth import get_auth_user_by_id
+            user_data = get_auth_user_by_id(user_id)
+            student_name = user_data.get("username", f"Student_{user_id[:8]}") if user_data else f"Student_{user_id[:8]}"
+        except:
+            # Fallback if MongoDB not available
+            student_name = f"Student_{user_id[:8]}" if len(user_id) >= 8 else f"Std_{user_id}"
+        
+        student_insights.append({
+            "user_id": user_id,
+            "student_name": student_name,
+            "total_queries": total_q,
+            "doubts": doubts or 0,
+            "help_requests": helps or 0
+        })
+    
+    return student_insights
+
+def get_topic_wise_student_doubts(classroom_id):
+    """Get topic-wise mapping of students facing doubts"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get topics with confusion scores
+    cursor.execute('''
+        SELECT topic_name, confusion_score, frequency FROM topic_logs 
+        WHERE classroom_id = ? AND (confusion_score > 0 OR frequency > 0)
+        ORDER BY (confusion_score * 2 + frequency) DESC
+        LIMIT 15
+    ''', (classroom_id,))
+    
+    topics = cursor.fetchall()
+    
+    # Get students with most doubts overall
+    cursor.execute('''
+        SELECT DISTINCT user_id FROM queries 
+        WHERE classroom_id = ? 
+        AND (is_unable_to_answer = 1 OR intent IN ('HELP_REQUEST', 'OFF_TOPIC'))
+        ORDER BY timestamp DESC
+        LIMIT 20
+    ''', (classroom_id,))
+    
+    doubt_students = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    topic_insights = []
+    for topic_name, confusion, freq in topics:
+        # Get top struggling students (those with most doubts in classroom)
+        struggling_students = []
+        for student_id in doubt_students[:5]:  # Top 5 students with doubts
+            try:
+                from .mongo_auth import get_auth_user_by_id
+                user_data = get_auth_user_by_id(student_id)
+                student_name = user_data.get("username", f"Student_{student_id[:8]}") if user_data else f"Student_{student_id[:8]}"
+            except:
+                # Fallback if MongoDB not available
+                student_name = f"Student_{student_id[:8]}" if len(student_id) >= 8 else f"Std_{student_id}"
+            
+            struggling_students.append({
+                "student_id": student_id,
+                "student_name": student_name
+            })
+        
+        topic_insights.append({
+            "topic": topic_name,
+            "confusion_score": confusion,
+            "frequency": freq,
+            "struggling_students": struggling_students
+        })
+    
+    return topic_insights
+
+def get_student_doubts_by_topic(classroom_id, student_user_id):
+    """Get specific student's doubts organized by topic"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get student name from MongoDB with fallback
+    try:
+        from .mongo_auth import get_auth_user_by_id
+        user_data = get_auth_user_by_id(student_user_id)
+        student_name = user_data.get("username", f"Student_{student_user_id[:8]}") if user_data else f"Student_{student_user_id[:8]}"
+    except:
+        # Fallback if MongoDB not available
+        student_name = f"Student_{student_user_id[:8]}" if len(student_user_id) >= 8 else f"Std_{student_user_id}"
+    
+    # Get queries where this student had doubts
+    cursor.execute('''
+        SELECT intent, COUNT(*) as query_count,
+               MAX(timestamp) as last_queried
+        FROM queries
+        WHERE classroom_id = ? AND user_id = ? 
+        AND (is_unable_to_answer = 1 OR intent IN ('HELP_REQUEST', 'OFF_TOPIC'))
+        GROUP BY intent
+        ORDER BY query_count DESC
+    ''', (classroom_id, student_user_id))
+    
+    results = cursor.fetchall()
+    
+    # Get all topics with doubts for context
+    cursor.execute('''
+        SELECT topic_name, confusion_score FROM topic_logs
+        WHERE classroom_id = ? AND confusion_score > 0
+        ORDER BY confusion_score DESC LIMIT 10
+    ''', (classroom_id,))
+    
+    topics = cursor.fetchall()
+    conn.close()
+    
+    return {
+        "student_name": student_name,
+        "student_id": student_user_id,
+        "doubts": [
+            {
+                "intent": row[0],
+                "query_count": row[1],
+                "last_queried": row[2]
+            }
+            for row in results
+        ],
+        "problematic_topics": [
+            {"topic": t[0], "confusion": t[1]}
+            for t in topics
+        ]
+    }
+

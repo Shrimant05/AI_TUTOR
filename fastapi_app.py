@@ -16,7 +16,9 @@ from src.main import socratic_agent, classify_intent
 from src.database import (
     init_db, log_query, log_topic, get_dashboard_stats,
     create_classroom, join_classroom,
-    get_classrooms_for_faculty, get_classrooms_for_student
+    get_classrooms_for_faculty, get_classrooms_for_student,
+    get_student_query_insights, get_topic_wise_student_doubts, 
+    get_student_doubts_by_topic
 )
 from src.mongo_auth import (
     init_mongo_auth, create_auth_user, get_auth_user_by_username,
@@ -271,6 +273,24 @@ async def dashboard_stats(classroom_id: str, current_user: dict = Depends(get_cu
     if current_user["role"] != "faculty":
         raise HTTPException(status_code=403, detail="Not authorized")
     return get_dashboard_stats(classroom_id)
+
+@app.get("/api/dashboard/student-insights")
+async def student_insights(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {"student_insights": get_student_query_insights(classroom_id)}
+
+@app.get("/api/dashboard/topic-students")
+async def topic_students(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {"topic_insights": get_topic_wise_student_doubts(classroom_id)}
+
+@app.get("/api/dashboard/student/{student_id}/doubts")
+async def student_doubts(student_id: str, classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return get_student_doubts_by_topic(classroom_id, student_id)
 
 @app.post("/api/upload_notes")
 async def upload_notes(
