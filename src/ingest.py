@@ -1,14 +1,15 @@
 import uuid
+import os
 from pathlib import Path
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import chromadb
 
 try:
-    from .config import DATA_DIR, DB_DIR, EMBED_MODEL
+    from .config import DATA_DIR, EMBED_MODEL, get_classroom_vector_db_path, normalize_classroom_id
 except ImportError:
     # Supports running as: python src/ingest.py
-    from config import DATA_DIR, DB_DIR, EMBED_MODEL
+    from config import DATA_DIR, EMBED_MODEL, get_classroom_vector_db_path, normalize_classroom_id
 
 
 def split_text(text, chunk_size, chunk_overlap):
@@ -37,11 +38,14 @@ def split_text(text, chunk_size, chunk_overlap):
 
 class IngestionPipeline:
     def __init__(self, classroom_id: str):
+        self.classroom_id = normalize_classroom_id(classroom_id)
         self.model = SentenceTransformer(EMBED_MODEL)
-        self.client = chromadb.PersistentClient(path=DB_DIR)
+        self.db_path = get_classroom_vector_db_path(self.classroom_id)
+        os.makedirs(self.db_path, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=self.db_path)
         
-        # Classroom-Level Isolation
-        self.collection_name = f"classroom_{classroom_id}"
+        # True classroom isolation: each classroom has its own persistent DB directory.
+        self.collection_name = "materials"
         # Two-tier splitter settings
         # Parent chunks (2000 chars) preserve the larger context (why/how).
         self.parent_chunk_size = 2000
@@ -79,6 +83,7 @@ class IngestionPipeline:
                 "source": str(pdf_path),
                 "source_file": source_name,
                 "page": page_index + 1,
+                "classroom_id": self.classroom_id,
             }
 
             # 1. Create Parent Chunks (The "Why" and Context)

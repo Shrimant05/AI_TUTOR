@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import { UploadCloud, FileText, Users, AlertTriangle, Trash2, Database, LogOut, Plus, BookOpen } from 'lucide-react';
+import { loadAuthSession, clearAuthSession, syncAuthSessionWithServer } from '../../lib/authStorage';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend
@@ -28,20 +29,33 @@ export default function Dashboard() {
   const [newRoomName, setNewRoomName] = useState("");
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const role = localStorage.getItem("role");
-    const username = localStorage.getItem("username");
-    
-    if (!token || role !== "faculty") {
-      router.push("/login");
-      return;
-    }
-    setAuth({ token, role, username });
-    
-    // Set default headers globally isn't great if multiple components coexist but fine for here
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    
-    fetchClassrooms();
+    const initializeAuth = async () => {
+      const { token, role, username } = loadAuthSession();
+
+      if (!token) {
+        router.push("/login");
+        return;
+      }
+
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      const synced = await syncAuthSessionWithServer(token);
+      if (!synced) {
+        clearAuthSession();
+        router.push("/login");
+        return;
+      }
+      const activeSession = synced || { token, role, username };
+
+      if (activeSession.role !== "faculty") {
+        router.push("/");
+        return;
+      }
+
+      setAuth(activeSession);
+      fetchClassrooms();
+    };
+
+    initializeAuth();
   }, []);
 
   useEffect(() => {
@@ -66,7 +80,10 @@ export default function Dashboard() {
       }
       return fetchedClassrooms;
     } catch (e) {
-      if (e.response?.status === 401) router.push("/login");
+      if (e.response?.status === 401) {
+        clearAuthSession();
+        router.push("/login");
+      }
       return [];
     }
   };
@@ -155,7 +172,7 @@ export default function Dashboard() {
   };
 
   const handleLogout = () => {
-    localStorage.clear();
+    clearAuthSession();
     router.push("/login");
   };
 

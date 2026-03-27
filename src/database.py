@@ -88,7 +88,7 @@ def create_user(username, password_hash, role):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", 
+        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
                        (username, password_hash, role))
         conn.commit()
         return True
@@ -105,6 +105,16 @@ def get_user_by_username(username):
     conn.close()
     if row:
         return {"id": row[0], "username": row[1], "password_hash": row[2], "role": row[3]}
+    return None
+
+def get_user_by_id(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, role FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "username": row[1], "role": row[2]}
     return None
 
 def create_classroom(name, faculty_id, join_code):

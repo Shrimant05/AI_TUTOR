@@ -25,3 +25,4 @@ opentelemetry-semantic-conventions
 # Authentication
 passlib[bcrypt]
 PyJWT
+pymongo

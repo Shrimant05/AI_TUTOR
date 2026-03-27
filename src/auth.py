@@ -1,10 +1,12 @@
 import os
 import datetime
+import uuid
 import jwt
 import bcrypt
 from passlib.context import CryptContext
 from fastapi import Request, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from .mongo_auth import get_auth_user_by_id, is_session_active
 
 SECRET_KEY = os.environ.get("JWT_SECRET", "super-secret-key-that-should-be-in-env")
 ALGORITHM = "HS256"
@@ -30,9 +32,14 @@ def get_password_hash(password):
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    jti = uuid.uuid4().hex
+    to_encode.update({"exp": expire, "jti": jti})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return {
+        "token": encoded_jwt,
+        "jti": jti,
+        "expires_at": expire,
+    }
 
 def decode_access_token(token: str):
     try:
@@ -48,9 +55,26 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     payload = decode_access_token(token)
     user_id: str = payload.get("sub")
     role: str = payload.get("role")
-    if user_id is None or role is None:
+    jti: str = payload.get("jti")
+    if user_id is None or role is None or jti is None:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
-    return {"user_id": user_id, "role": role}
+
+    user = get_auth_user_by_id(str(user_id))
+    if not user or not user.get("is_active", False):
+        raise HTTPException(status_code=401, detail="User inactive or not found")
+
+    if user["role"] != role:
+        raise HTTPException(status_code=401, detail="Token role mismatch")
+
+    if not is_session_active(str(user_id), jti):
+        raise HTTPException(status_code=401, detail="Session expired or revoked")
+
+    return {
+        "user_id": str(user_id),
+        "role": user["role"],
+        "jti": jti,
+        "username": user["username"],
+    }
 
 def verify_token_from_header(request: Request):
     auth_header = request.headers.get("Authorization")

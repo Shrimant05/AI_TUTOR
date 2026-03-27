@@ -1,14 +1,48 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
+import { loadAuthSession, saveAuthSession, syncAuthSessionWithServer, clearAuthSession } from '../../lib/authStorage';
 
 export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [checkingSession, setCheckingSession] = useState(true);
   const router = useRouter();
+
+  useEffect(() => {
+    const redirectIfAuthenticated = async () => {
+      const session = loadAuthSession();
+      if (!session.token) {
+        setCheckingSession(false);
+        return;
+      }
+
+      const synced = await syncAuthSessionWithServer(session.token);
+      if (!synced) {
+        clearAuthSession();
+        setCheckingSession(false);
+        return;
+      }
+
+      const active = synced || session;
+      if ((active.role || "").toLowerCase() === "faculty") {
+        router.push("/dashboard");
+        return;
+      }
+
+      if ((active.role || "").toLowerCase() === "student") {
+        router.push("/");
+        return;
+      }
+
+      setCheckingSession(false);
+    };
+
+    redirectIfAuthenticated();
+  }, [router]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -23,9 +57,11 @@ export default function Login() {
         username: normalizedUsername,
         password
       });
-      localStorage.setItem("token", res.data.access_token);
-      localStorage.setItem("role", res.data.role);
-      localStorage.setItem("username", res.data.username);
+      saveAuthSession({
+        token: res.data.access_token,
+        role: res.data.role,
+        username: res.data.username,
+      });
       
       if (res.data.role === "faculty") {
         router.push("/dashboard");
@@ -36,6 +72,10 @@ export default function Login() {
       setError(err.response?.data?.detail || "Login failed");
     }
   };
+
+  if (checkingSession) {
+    return <div style={{padding: '50px', textAlign: 'center'}}>Loading...</div>;
+  }
 
   return (
     <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '80vh', flexDirection: 'column'}}>

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, UploadCloud, Book, Hash, LogOut, ArrowLeft, Plus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { loadAuthSession, clearAuthSession, syncAuthSessionWithServer } from '../lib/authStorage';
 
 export default function Home() {
   const router = useRouter();
@@ -17,6 +18,8 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState([]);
+  const [chatHistory, setChatHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   
   const messagesEndRef = useRef(null);
 
@@ -27,24 +30,39 @@ export default function Home() {
   useEffect(() => scrollToBottom(), [messages]);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const role = localStorage.getItem("role");
-    const username = localStorage.getItem("username");
-    
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-    
-    setAuth({ token, role, username });
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    
-    // Generate unique session for this open tab
-    if (!localStorage.getItem("sessionId")) {
-      localStorage.setItem("sessionId", "session_" + Math.random().toString(36).substring(7));
-    }
-    
-    fetchClassrooms();
+    const initializeAuth = async () => {
+      const { token, role, username } = loadAuthSession();
+
+      if (!token) {
+        router.push("/login");
+        return;
+      }
+
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      const synced = await syncAuthSessionWithServer(token);
+      if (!synced) {
+        clearAuthSession();
+        router.push("/login");
+        return;
+      }
+      const activeSession = synced || { token, role, username };
+
+      if ((activeSession.role || "").toLowerCase() === "faculty") {
+        router.push("/dashboard");
+        return;
+      }
+
+      setAuth(activeSession);
+
+      // Generate unique session for this open tab
+      if (!localStorage.getItem("sessionId")) {
+        localStorage.setItem("sessionId", "session_" + Math.random().toString(36).substring(7));
+      }
+
+      fetchClassrooms();
+    };
+
+    initializeAuth();
   }, []);
 
   const fetchClassrooms = async () => {
@@ -52,7 +70,10 @@ export default function Home() {
       const res = await axios.get(`http://localhost:8000/api/classrooms?t=${new Date().getTime()}`);
       setClassrooms(res.data.classrooms || []);
     } catch (e) {
-      if (e.response?.status === 401) router.push("/login");
+      if (e.response?.status === 401) {
+        clearAuthSession();
+        router.push("/login");
+      }
     }
   };
 
@@ -72,6 +93,7 @@ export default function Home() {
     setSelectedClassroom(c);
     setMessages([{ role: 'ai', content: `Hello! I am your AI Tutor for **${c.name}**. What would you like to review?` }]);
     fetchNotes(c.id);
+    fetchChatHistory(c.id);
   };
 
   const fetchNotes = async (classroomId) => {
@@ -80,6 +102,22 @@ export default function Home() {
       setNotes(res.data.notes || []);
     } catch (err) {
       console.error("Failed to fetch available notes", err);
+    }
+  };
+
+  const fetchChatHistory = async (classroomId) => {
+    if (!classroomId) return;
+    setHistoryLoading(true);
+    try {
+      const res = await axios.get("http://localhost:8000/api/chat/history", {
+        params: { classroom_id: String(classroomId), limit: 500 }
+      });
+      setChatHistory(res.data.items || []);
+    } catch (err) {
+      console.error("Failed to fetch chat history", err);
+      setChatHistory([]);
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -107,6 +145,7 @@ export default function Home() {
         content: response.data.reply,
         citations: response.data.citations 
       }]);
+      fetchChatHistory(selectedClassroom.id);
     } catch (error) {
       setMessages(prev => [...prev, { role: 'ai', content: "An error occurred connecting to the tutor." }]);
     }
@@ -114,7 +153,7 @@ export default function Home() {
   };
 
   const handleLogout = () => {
-    localStorage.clear();
+    clearAuthSession();
     router.push("/login");
   };
 
@@ -168,7 +207,6 @@ export default function Home() {
                 onMouseOut={(e) => e.currentTarget.style.borderColor = 'transparent'}
               >
                 <h3 style={{fontSize: '1.2rem', margin: '0 0 10px 0'}}>{c.name}</h3>
-                <p style={{margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)'}}>Enter AI Tutor Chat &rarr;</p>
               </div>
             ))
           }
@@ -180,36 +218,16 @@ export default function Home() {
   // View 2: Chat Interface
   return (
     <div className="layout-container">
-      {/* Sidebar Notebook Indicator */}
-      <aside className="sidebar">
-        <button onClick={() => setSelectedClassroom(null)} style={{background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', fontWeight: 600}}>
-          <ArrowLeft size={16}/> Back
-        </button>
-        <div style={{padding: '0 0 15px 0', borderBottom: '1px solid var(--panel-border)', marginBottom: '15px'}}>
+      {/* Main Chat Area */}
+      <main className="chat-container">
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', borderBottom: '1px solid var(--panel-border)', marginBottom: '15px'}}>
           <h2 style={{fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', margin: 0}}>
             <Book size={18} /> {selectedClassroom.name}
           </h2>
-          <p style={{fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '5px'}}>AI is strictly grounded on these materials.</p>
+          <button onClick={() => setSelectedClassroom(null)} style={{background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600}}>
+            <ArrowLeft size={16}/> Back
+          </button>
         </div>
-
-        {notes.length === 0 ? (
-          <div style={{fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
-            Instructor hasn't uploaded notes yet.
-          </div>
-        ) : (
-          <ul style={{listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '8px'}}>
-            {notes.map(note => (
-              <li key={note} style={{fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(255,255,255,0.8)'}}>
-                <Hash size={14} style={{color: 'var(--accent-color)'}}/> 
-                <span style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{note}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </aside>
-
-      {/* Main Chat Area */}
-      <main className="chat-container">
         <div className="chat-history">
           {messages.map((msg, index) => (
             <div key={index} className={`message ${msg.role === 'user' ? 'user-message' : 'ai-message'}`}>

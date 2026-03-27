@@ -1,6 +1,7 @@
 import json
 import requests
 import re
+from typing import Set
 from .router import classify_intent
 from .config import OLLAMA_HOST, LLM_MODEL
 
@@ -53,15 +54,16 @@ def _fallback_socratic_reply(query, context_text, has_attempt=False, unable_to_a
 SYSTEM_PROMPT = """
 You are a Socratic College Tutor. 
 1. Use ONLY the provided context to help the student.
-2. NEVER give the direct answer, final numeric code, or full derivation.
-3. Explain the concept and ask a guiding question to lead them to the next step.
+2. NEVER give the direct answer, final numeric result, final code, or full derivation.
+3. Your motive is to make the student learn. Always explain the concept briefly and ask guiding questions that move them toward the final answer.
 4. Always cite the sources utilized from the context.
-5. If the request demands a direct answer, refuse gracefully and ask a guiding question.
+5. If the student asks for the final answer directly, politely refuse and explicitly say your motive is helping them learn, then ask a guiding question.
 6. CRITICAL: If the student provides an attempted answer or calculation, you MUST evaluate if it is correct or incorrect based on the context. If correct, confirm it explicitly. If incorrect, gently point out where the error might be.
 7. Follow this hint ladder:
    - Level 1: Ask 1-2 guiding questions only.
    - Level 2: Give a small hint or a partial setup, still no final answer.
    - Level 3: Share the relevant relation, then ask the student to substitute values.
+8. If the student's latest answer is correct, acknowledge it clearly and end the chat politely. Do not ask another follow-up question in that case.
 
 OUTPUT INSTRUCTION:
 Provide your response strictly in the following JSON format:
@@ -113,12 +115,31 @@ def _student_attempted_solution(query, history):
 
 def _direct_answer_refusal(history):
     templates = [
-        "I cannot provide direct or final answers, but I can help you solve it step by step. Tell me which relation links the concepts.",
-        "I cannot give the final answer directly. I can guide you: first list the given values, then identify the relation. What do you recall?",
-        "I cannot solve it for you, but let's reach the result together. Set up the standard relation and I will check it.",
+        "I cannot provide the final answer directly because my motive is to help you learn the method. Which relation links these terms?",
+        "I will not give the final answer directly, because my motive is to make you learn step by step. Can you list the given values first?",
+        "I cannot solve it for you directly. My motive is helping you learn, so set up the standard relation and I will check your next step.",
     ]
     direct_requests = sum(1 for turn in history or [] if turn.get("role") == "student" and any(p in (turn.get("content") or "").strip().lower() for p in ("direct answer", "give me the answer")))
     return templates[direct_requests % len(templates)]
+
+
+def _looks_like_direct_answer_request(query: str) -> bool:
+    text = (query or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "final answer",
+        "direct answer",
+        "just answer",
+        "just give answer",
+        "give me the answer",
+        "only answer",
+        "no steps",
+        "no explanation",
+        "solve and give",
+        "just solve",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _build_effective_query(query, history):
@@ -172,11 +193,57 @@ def _student_showing_understanding(query):
     return any(m in text for m in ("i think", "i got", "therefore", "thus", "hence", "because", "which means", "is correct")) or ("=" in text and any(ch.isdigit() for ch in text))
 
 
-def socratic_agent(query, retriever, history=None, user_id="faculty"):
+def _tokenize_text(text: str) -> Set[str]:
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    stop = {
+        "the", "a", "an", "of", "in", "on", "to", "for", "and", "or", "is", "are", "was", "were",
+        "what", "which", "how", "why", "when", "where", "who", "with", "from", "that", "this", "it",
+        "find", "explain", "define", "about", "give", "tell", "me", "my", "your", "their",
+    }
+    return {t for t in tokens if len(t) >= 3 and t not in stop}
+
+
+def _is_retrieval_relevant(query: str, results, min_overlap: float = 0.22) -> bool:
+    query_tokens = _tokenize_text(query)
+    if not query_tokens:
+        return True
+
+    best_overlap = 0.0
+    for row in results or []:
+        content = (row.get("content") or "")[:1600]
+        content_tokens = _tokenize_text(content)
+        if not content_tokens:
+            continue
+        overlap = len(query_tokens & content_tokens) / max(1, len(query_tokens))
+        if overlap > best_overlap:
+            best_overlap = overlap
+
+    return best_overlap >= min_overlap
+
+
+def socratic_agent(query, retriever, history=None, user_id="faculty", allowed_sources=None):
     history = history or []
+    normalized_allowed_sources = None
+    if allowed_sources is not None:
+        normalized_allowed_sources = {str(name).strip().lower() for name in allowed_sources}
+
+    def _filter_allowed(rows):
+        if normalized_allowed_sources is None:
+            return rows
+        filtered = []
+        for row in rows:
+            src = str((row.get("metadata") or {}).get("source_file", "")).strip().lower()
+            if src in normalized_allowed_sources:
+                filtered.append(row)
+        return filtered
+
     intent = classify_intent(query, history=history)
+
+    # Safety reinforcement in case router intent misses direct-answer phrasing.
+    if _looks_like_direct_answer_request(query):
+        intent = "SAFETY_VIOLATION"
     
-    validation_search = retriever.retrieve(query, top_k=1)
+    validation_search = _filter_allowed(retriever.retrieve(query, top_k=1))
     if intent == "SOCIAL" and validation_search and len(query.split()) > 2:
         intent = "COURSE_RELATED"
 
@@ -190,11 +257,15 @@ def socratic_agent(query, retriever, history=None, user_id="faculty"):
     effective_query = _build_effective_query(query, history)
     
     # 2. Retrieve
-    results = retriever.retrieve(effective_query, top_k=3, score_threshold=0.95)
+    results = _filter_allowed(retriever.retrieve(effective_query, top_k=3, score_threshold=0.95))
     
     # Rejection Logic: Out of Scope
     if not results:
         return {"reply": "This is outside the provided course material. I am restricted to the course context.", "citations": []}
+
+    # Reject weak lexical matches that often cause repetitive, irrelevant replies.
+    if not _is_retrieval_relevant(query, results):
+        return {"reply": "This looks outside the current classroom material. Please ask from the uploaded course notes.", "citations": []}
 
     # 3. Build Context
     context = ""
@@ -225,7 +296,8 @@ Recent dialogue: {_format_recent_history(history)}
 """
         response_data = _call_llm(scaffold_prompt, temperature=0.3, require_json=True)
         if response_data:
-            return response_data
+                response_data["citations"] = citations_data
+                return response_data
         return {"reply": _fallback_socratic_reply(query, context), "citations": citations_data}
 
     # 4. Socratic Generation
@@ -248,9 +320,8 @@ Respond exactly adhering to the JSON schema.
     
     response_data = _call_llm(full_prompt, temperature=0.3, require_json=True)
     if response_data:
-        # If the LLM misses citations, forcefully attach them.
-        if not response_data.get("citations"):
-            response_data["citations"] = citations_data
+        # Always keep citations grounded to retrieved chunks from the current classroom.
+        response_data["citations"] = citations_data
         return response_data
 
     return {"reply": _fallback_socratic_reply(query, context), "citations": citations_data}
