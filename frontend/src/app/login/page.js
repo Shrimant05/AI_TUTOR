@@ -327,7 +327,7 @@ export default function Login() {
     const selectedName = (authInputsRef.current.username || "").trim();
     const selectedRole = (authInputsRef.current.role || "").trim().toLowerCase();
     try {
-      const res = await axios.post("http://localhost:8000/api/auth/google", {
+      const res = await axios.post("/api/auth/google", {
         id_token: credential,
         role: ["student", "faculty"].includes(selectedRole) ? selectedRole : undefined,
         username: selectedName || undefined,
@@ -406,7 +406,7 @@ export default function Login() {
       const form = new URLSearchParams();
       form.append("username", normalizedUsername);
       form.append("password", password);
-      const res = await axios.post("http://localhost:8000/api/auth/token", form, {
+      const res = await axios.post("/api/auth/token", form, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
       if ((res.data.role || "").toLowerCase() !== role.toLowerCase()) {

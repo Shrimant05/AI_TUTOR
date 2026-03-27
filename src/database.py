@@ -79,9 +79,16 @@ def init_db():
             intent TEXT NOT NULL,
             is_unable_to_answer BOOLEAN DEFAULT 0,
             has_attempted BOOLEAN DEFAULT 0,
+            response_time_ms REAL,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Backward-compatible migration for existing DB files created before latency tracking.
+    cursor.execute("PRAGMA table_info(queries)")
+    query_columns = [row[1] for row in cursor.fetchall()]
+    if "response_time_ms" not in query_columns:
+        cursor.execute("ALTER TABLE queries ADD COLUMN response_time_ms REAL")
     
     # Topics/Heatmap table: Topic-wise confusion tracking per classroom
     cursor.execute('''
@@ -92,6 +99,22 @@ def init_db():
             frequency INTEGER DEFAULT 1,
             confusion_score INTEGER DEFAULT 0,
             last_queried TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Chat feedback table to capture thumbs up/down on AI responses.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            classroom_id INTEGER NOT NULL,
+            session_id TEXT,
+            response_id TEXT,
+            feedback_value INTEGER NOT NULL,
+            response_length INTEGER DEFAULT 0,
+            had_citations BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -183,15 +206,72 @@ def get_classrooms_for_student(student_id):
     return [{"id": r[0], "name": r[1], "join_code": r[2]} for r in rows]
 
 # Analytics wrappers
-def log_query(user_id, session_id, classroom_id, query_text, intent, is_unable_to_answer, has_attempted):
+def log_query(user_id, session_id, classroom_id, query_text, intent, is_unable_to_answer, has_attempted, response_time_ms=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO queries (user_id, session_id, classroom_id, query_text, intent, is_unable_to_answer, has_attempted)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, session_id, classroom_id, query_text, intent, bool(is_unable_to_answer), bool(has_attempted)))
+        INSERT INTO queries (user_id, session_id, classroom_id, query_text, intent, is_unable_to_answer, has_attempted, response_time_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        user_id,
+        session_id,
+        classroom_id,
+        query_text,
+        intent,
+        bool(is_unable_to_answer),
+        bool(has_attempted),
+        float(response_time_ms) if response_time_ms is not None else None,
+    ))
     conn.commit()
     conn.close()
+
+
+def get_latency_stats(classroom_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT
+            COUNT(response_time_ms) as measured_count,
+            AVG(response_time_ms) as avg_ms,
+            MAX(response_time_ms) as max_ms
+        FROM queries
+        WHERE classroom_id = ? AND response_time_ms IS NOT NULL
+    ''', (classroom_id,))
+    overall = cursor.fetchone() or (0, None, None)
+
+    cursor.execute('''
+        SELECT
+            user_id,
+            COUNT(response_time_ms) as response_count,
+            AVG(response_time_ms) as avg_ms,
+            MAX(response_time_ms) as max_ms
+        FROM queries
+        WHERE classroom_id = ? AND response_time_ms IS NOT NULL
+        GROUP BY user_id
+        ORDER BY avg_ms DESC
+    ''', (classroom_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    user_rows = []
+    for user_id, response_count, avg_ms, max_ms in rows:
+        user_rows.append({
+            "user_id": user_id,
+            "student_name": _resolve_student_name(user_id),
+            "response_count": int(response_count or 0),
+            "avg_response_time_ms": round(float(avg_ms or 0.0), 2),
+            "max_response_time_ms": round(float(max_ms or 0.0), 2),
+        })
+
+    measured_count, overall_avg, overall_max = overall
+    return {
+        "classroom_id": str(classroom_id),
+        "measured_responses": int(measured_count or 0),
+        "overall_avg_response_time_ms": round(float(overall_avg or 0.0), 2),
+        "overall_max_response_time_ms": round(float(overall_max or 0.0), 2),
+        "users": user_rows,
+    }
 
 def log_topic(classroom_id, topic_name, confusion_added=0):
     conn = sqlite3.connect(DB_PATH)
@@ -446,4 +526,103 @@ def get_topic_clusters(classroom_id: str):
             "r": r
         })
     return clusters
+
+
+def save_chat_feedback(
+    user_id,
+    classroom_id,
+    session_id,
+    response_id,
+    feedback_value,
+    response_length,
+    had_citations,
+):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    if response_id:
+        cursor.execute('''
+            SELECT id FROM chat_feedback
+            WHERE user_id = ? AND classroom_id = ? AND response_id = ?
+            ORDER BY id DESC LIMIT 1
+        ''', (user_id, classroom_id, response_id))
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute('''
+                UPDATE chat_feedback
+                SET feedback_value = ?, response_length = ?, had_citations = ?,
+                    session_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (
+                int(feedback_value),
+                int(response_length or 0),
+                1 if had_citations else 0,
+                session_id,
+                existing[0],
+            ))
+            conn.commit()
+            conn.close()
+            return
+
+    cursor.execute('''
+        INSERT INTO chat_feedback
+        (user_id, classroom_id, session_id, response_id, feedback_value, response_length, had_citations)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        user_id,
+        classroom_id,
+        session_id,
+        response_id,
+        int(feedback_value),
+        int(response_length or 0),
+        1 if had_citations else 0,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_feedback_preferences(user_id, classroom_id):
+    """Infer lightweight response-style preferences from thumbs feedback."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT
+            feedback_value,
+            COUNT(*) as cnt,
+            AVG(response_length) as avg_len,
+            AVG(CASE WHEN had_citations = 1 THEN 1.0 ELSE 0.0 END) as citation_rate
+        FROM chat_feedback
+        WHERE user_id = ? AND classroom_id = ?
+        GROUP BY feedback_value
+    ''', (user_id, classroom_id))
+    rows = cursor.fetchall()
+    conn.close()
+
+    by_value = {int(v): {"count": c, "avg_len": l or 0.0, "citation_rate": r or 0.0} for v, c, l, r in rows}
+    up = by_value.get(1, {"count": 0, "avg_len": 0.0, "citation_rate": 0.0})
+    down = by_value.get(-1, {"count": 0, "avg_len": 0.0, "citation_rate": 0.0})
+    total = int(up["count"] + down["count"])
+
+    if total < 3:
+        return ""
+
+    preferences = []
+
+    if up["avg_len"] > 0 and down["avg_len"] > 0:
+        if up["avg_len"] < (down["avg_len"] * 0.8):
+            preferences.append("Prefer concise responses (about 3-6 sentences) unless the student asks for detail.")
+        elif up["avg_len"] > (down["avg_len"] * 1.2):
+            preferences.append("Prefer more detailed, step-by-step responses before asking the next question.")
+
+    citation_delta = float(up["citation_rate"] - down["citation_rate"])
+    if citation_delta > 0.2:
+        preferences.append("Include source citations whenever relevant; the student responds better to cited answers.")
+    elif citation_delta < -0.2:
+        preferences.append("Keep citations brief and only include the most relevant source to avoid clutter.")
+
+    if down["count"] > up["count"] and total >= 5:
+        preferences.append("Ask one short clarifying question before giving guidance when the prompt is ambiguous.")
+
+    return " ".join(preferences).strip()
 

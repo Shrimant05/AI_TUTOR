@@ -352,7 +352,7 @@ export default function Register() {
     if (!selectedName) { setError("Enter your name and select a role before Google sign-up."); return; }
     if (!["student", "faculty"].includes(selectedRole)) { setError("Select a role before Google sign-up."); return; }
     try {
-      const res = await axios.post("http://localhost:8000/api/auth/google", {
+      const res = await axios.post("/api/auth/google", {
         id_token: credential,
         role: selectedRole,
         username: selectedName,
@@ -426,10 +426,10 @@ export default function Register() {
     if (!["student", "faculty"].includes(normalizedRole)) { setError("Please select your role"); return; }
     try {
       setLoading(true);
-      await axios.post("http://localhost:8000/api/auth/register", {
+      await axios.post("/api/auth/register", {
         username: normalizedUsername, password, role: normalizedRole,
       });
-      const res = await axios.post("http://localhost:8000/api/auth/login", {
+      const res = await axios.post("/api/auth/login", {
         username: normalizedUsername, password,
       });
       finalizeLogin(res.data);

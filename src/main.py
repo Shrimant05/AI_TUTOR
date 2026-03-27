@@ -304,7 +304,7 @@ def _is_retrieval_relevant(query: str, results, min_overlap: float = 0.22) -> bo
     return best_overlap >= min_overlap
 
 
-def socratic_agent(query, retriever, history=None, user_id="faculty", allowed_sources=None):
+def socratic_agent(query, retriever, history=None, user_id="faculty", allowed_sources=None, response_preferences: str = ""):
     history = history or []
     normalized_allowed_sources = None
     if allowed_sources is not None:
@@ -423,8 +423,11 @@ Follow these steps:
 4. NEVER dismiss correct or partially-correct answers as "outside classroom material"
 """
     
+    preference_block = f"\nUSER FEEDBACK PREFERENCES:\n{response_preferences}\n" if response_preferences else ""
+
     full_prompt = f"""{SYSTEM_PROMPT}
 {answer_evaluation_instruction}
+{preference_block}
 
 Current required hint level: {guidance}
 Recent conversation:

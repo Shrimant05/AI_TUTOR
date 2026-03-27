@@ -2,7 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
-import { Send, Book, Hash, LogOut, ArrowLeft, Plus, Download, Sparkles, ChevronRight, Zap, Brain, Target } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import mermaid from "mermaid";
+import { Send, Book, Hash, LogOut, ArrowLeft, Plus, Download, Sparkles, ChevronRight, Zap, Brain, Target, Mic, Square, Volume2, Paperclip, X, Eye, ThumbsUp, ThumbsDown } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   loadAuthSession,
@@ -13,6 +17,7 @@ import {
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const PAGE_STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=DM+Mono:wght@300;400;500&display=swap');
+  @import url('https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css');
 
   :root {
     --bg:          #05080f;
@@ -476,6 +481,7 @@ const PAGE_STYLES = `
   }
   .mat-dl-btn:hover { border-color: var(--border-hi); color: var(--accent); }
   .mat-dl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .mat-actions { display: flex; align-items: center; gap: 8px; }
   .mat-dl-all {
     display: flex; align-items: center; gap: 5px;
     background: transparent; border: 1px solid var(--border);
@@ -532,7 +538,35 @@ const PAGE_STYLES = `
   }
   .msg-body { max-width: 72%; display: flex; flex-direction: column; gap: 4px; }
   .msg-row.user .msg-body { align-items: flex-end; }
+  .msg-head { display: flex; align-items: center; gap: 8px; }
   .msg-who { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-3); }
+  .msg-action-btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-2);
+    border-radius: 8px;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .msg-action-btn:hover {
+    color: var(--accent);
+    border-color: var(--border-hi);
+  }
+  .msg-action-btn.active-up {
+    color: #66d18f;
+    border-color: rgba(102, 209, 143, 0.5);
+    background: rgba(102, 209, 143, 0.12);
+  }
+  .msg-action-btn.active-down {
+    color: var(--danger);
+    border-color: rgba(247, 93, 110, 0.5);
+    background: rgba(247, 93, 110, 0.12);
+  }
   .msg-bubble {
     padding: 13px 17px; border-radius: 14px;
     font-size: 0.93rem; line-height: 1.72; word-break: break-word;
@@ -613,7 +647,64 @@ const PAGE_STYLES = `
     transform: translateY(-2px);
     box-shadow: 0 8px 22px rgba(61,214,245,0.38);
   }
+  .c-send-btn.voice {
+    background: rgba(61,214,245,0.08);
+    border: 1px solid rgba(61,214,245,0.25);
+    color: var(--accent);
+  }
+  .c-send-btn.voice.listening {
+    background: rgba(247,93,110,0.15);
+    border: 1px solid rgba(247,93,110,0.45);
+    color: #ff8f9a;
+    box-shadow: 0 0 0 3px rgba(247,93,110,0.12);
+  }
+  .c-send-btn.attach {
+    background: rgba(124,110,245,0.12);
+    border: 1px solid rgba(124,110,245,0.35);
+    color: #b7acf8;
+  }
+  .c-send-btn.attach.busy {
+    opacity: 0.7;
+    cursor: wait;
+  }
   .c-send-btn:disabled { opacity: 0.32; cursor: not-allowed; }
+  .c-attach-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .c-attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(124,110,245,0.1);
+    border: 1px solid rgba(124,110,245,0.3);
+    border-radius: 999px;
+    padding: 5px 10px;
+    color: #c9c1ff;
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    max-width: 280px;
+  }
+  .c-attach-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .c-attach-remove {
+    border: none;
+    background: transparent;
+    color: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .c-hidden-file {
+    display: none;
+  }
   .c-input-hint {
     text-align: center; margin-top: 9px;
     font-size: 0.66rem; color: var(--text-3); font-family: var(--mono);
@@ -638,6 +729,48 @@ const PAGE_STYLES = `
     from { opacity: 0; transform: translateY(18px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  .markdown-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .markdown-content p { margin: 0; }
+  .markdown-content ul, .markdown-content ol { padding-left: 18px; }
+  .markdown-content code {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-family: var(--mono);
+    font-size: 0.85em;
+  }
+  .markdown-content pre {
+    margin: 0;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow-x: auto;
+    padding: 12px;
+  }
+  .markdown-content pre code {
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
+  .diagram-wrap {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    overflow: auto;
+  }
+  .diagram-fallback {
+    color: #ff8f9a;
+    font-size: 0.8rem;
+    font-family: var(--mono);
+    white-space: pre-wrap;
+  }
+  .katex-display { overflow-x: auto; overflow-y: hidden; }
   .empty-text { font-size: 0.76rem; color: var(--text-3); font-family: var(--mono); }
 
   /* ── Cursor trail dot ── */
@@ -670,12 +803,20 @@ export default function Home() {
   const [notes, setNotes]                         = useState([]);
   const [notesMeta, setNotesMeta]                 = useState([]);
   const [downloadingNote, setDownloadingNote]     = useState("");
+  const [viewingNote, setViewingNote]             = useState("");
   const [downloadingAllNotes, setDownloadingAllNotes] = useState(false);
   const [chatHistory, setChatHistory]             = useState([]);
   const [historyLoading, setHistoryLoading]       = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [gsapReady, setGsapReady]                 = useState(false);
   const [sidebarOpen, setSidebarOpen]             = useState(false);
+  const [isListening, setIsListening]             = useState(false);
+  const [speechSupported, setSpeechSupported]     = useState(false);
+  const [speakingIndex, setSpeakingIndex]         = useState(null);
+  const [attachmentContext, setAttachmentContext] = useState([]);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [feedbackByResponse, setFeedbackByResponse] = useState({});
+  const [feedbackBusy, setFeedbackBusy] = useState({});
 
   const messagesEndRef  = useRef(null);
   const textareaRef     = useRef(null);
@@ -685,12 +826,132 @@ export default function Home() {
   const cursorRingRef   = useRef(null);
   const gsapRef         = useRef(null);
   const heroAnimDoneRef = useRef(false);
+  const speechRecognitionRef = useRef(null);
+  const voiceBaseInputRef = useRef("");
+  const fileInputRef = useRef(null);
+
+  const MermaidDiagram = ({ chart }) => {
+    const diagramRef = useRef(null);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+      let mounted = true;
+
+      const renderDiagram = async () => {
+        try {
+          mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: "dark" });
+          const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+          const { svg } = await mermaid.render(id, chart);
+          if (mounted && diagramRef.current) {
+            diagramRef.current.innerHTML = svg;
+            setError("");
+          }
+        } catch {
+          if (mounted) setError("Unable to render diagram. Check Mermaid syntax.");
+        }
+      };
+
+      renderDiagram();
+      return () => { mounted = false; };
+    }, [chart]);
+
+    if (error) {
+      return (
+        <div className="diagram-wrap">
+          <pre className="diagram-fallback">{error}{"\n\n"}{chart}</pre>
+        </div>
+      );
+    }
+
+    return <div className="diagram-wrap" ref={diagramRef} />;
+  };
+
+  const renderMessageContent = (content) => (
+    <ReactMarkdown
+      remarkPlugins={[remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{
+        code({ inline, className, children, ...props }) {
+          const lang = (className || "").replace("language-", "").trim().toLowerCase();
+          const codeText = String(children).replace(/\n$/, "");
+
+          if (!inline && lang === "mermaid") {
+            return <MermaidDiagram chart={codeText} />;
+          }
+
+          if (inline) {
+            return <code {...props}>{children}</code>;
+          }
+
+          return (
+            <pre>
+              <code className={className} {...props}>{codeText}</code>
+            </pre>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 
   // ── Scroll to bottom on new message ──
   useEffect(() => {
     // Use instant scroll to prevent window animation from hiding input controls
     messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages]);
+
+  // ── Speech recognition setup ──
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setSpeechSupported(false);
+      return;
+    }
+
+    const recognition = new SR();
+    recognition.lang = "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0]?.transcript || "";
+        if (event.results[i].isFinal) finalText += `${transcript} `;
+        else interimText += transcript;
+      }
+      const spoken = `${finalText}${interimText}`.trim();
+      const base = voiceBaseInputRef.current.trim();
+      setInput([base, spoken].filter(Boolean).join(base && spoken ? " " : ""));
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+
+    speechRecognitionRef.current = recognition;
+    setSpeechSupported(true);
+
+    return () => {
+      recognition.stop();
+      speechRecognitionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   // ── Hide global sidebar when in chat ──
   useEffect(() => {
@@ -870,7 +1131,7 @@ export default function Home() {
   // ─── Data fetchers ────────────────────────────────────────
   const fetchClassrooms = async () => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/classrooms?t=${Date.now()}`);
+      const res = await axios.get(`/api/classrooms?t=${Date.now()}`);
       setClassrooms(res.data.classrooms || []);
     } catch (e) {
       if (e.response?.status === 401) { clearAuthSession(); router.push("/login"); }
@@ -879,7 +1140,7 @@ export default function Home() {
 
   const fetchNotes = async (classroomId) => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/notes?classroom_id=${classroomId}&t=${Date.now()}`);
+      const res = await axios.get(`/api/notes?classroom_id=${classroomId}&t=${Date.now()}`);
       setNotes(res.data.notes || []);
       setNotesMeta(res.data.notes_meta || []);
     } catch { setNotesMeta([]); }
@@ -889,7 +1150,7 @@ export default function Home() {
     if (!classroomId) return;
     setHistoryLoading(true);
     try {
-      const res = await axios.get("http://localhost:8000/api/chat/history", {
+      const res = await axios.get("/api/chat/history", {
         params: { classroom_id: String(classroomId), limit: 500 },
       });
       const items = res.data.items || [];
@@ -905,14 +1166,17 @@ export default function Home() {
   };
 
   const hydrateMessages = (items) => {
+    setFeedbackByResponse({});
+    setFeedbackBusy({});
     const h = [];
     items.forEach(item => {
       h.push({ role: "user", content: item.query || "" });
-      h.push({ role: "ai", content: item.reply || "", citations: item.citations || [] });
+      h.push({ role: "ai", content: item.reply || "", citations: item.citations || [], response_id: item.response_id || null });
     });
     setMessages(h.length > 0 ? h : [{
       role: "ai",
       content: `Hello! I'm your AI Tutor for **${selectedClassroom?.name || "this class"}**. Ask me anything! 🎓`,
+      system: true,
     }]);
   };
 
@@ -925,7 +1189,7 @@ export default function Home() {
       return;
     }
     try {
-      await axios.post("http://localhost:8000/api/classrooms/join", { join_code: normalizedCode });
+      await axios.post("/api/classrooms/join", { join_code: normalizedCode });
       setJoinCode("");
       await fetchClassrooms();
       alert("Joined classroom successfully.");
@@ -941,12 +1205,15 @@ export default function Home() {
 
   const handleSelectClassroom = (c) => {
     setSelectedClassroom(c);
+    setFeedbackByResponse({});
+    setFeedbackBusy({});
     const sid = localStorage.getItem("sessionId") || "session_" + Math.random().toString(36).substring(7);
     localStorage.setItem("sessionId", sid);
     setSelectedSessionId(sid);
     setMessages([{
       role: "ai",
       content: `Hello! I'm your AI Tutor for **${c.name}**. What would you like to review? 🎓`,
+      system: true,
     }]);
     fetchNotes(c.id);
     fetchChatHistory(c.id);
@@ -965,33 +1232,175 @@ export default function Home() {
     const sid = "session_" + Math.random().toString(36).substring(7);
     localStorage.setItem("sessionId", sid);
     setSelectedSessionId(sid);
+    setAttachmentContext([]);
+    setFeedbackByResponse({});
+    setFeedbackBusy({});
     setMessages([{
       role: "ai",
       content: `Hello! I'm your AI Tutor for **${selectedClassroom?.name || "this class"}**. Ask me anything! 🎓`,
+      system: true,
     }]);
+  };
+
+  const getFeedbackKey = (msg, index) => {
+    if (msg?.response_id) return `rid:${msg.response_id}`;
+    const sid = localStorage.getItem("sessionId") || selectedSessionId || "nosession";
+    return `legacy:${selectedClassroom?.id || "none"}:${sid}:${index}`;
+  };
+
+  const handleFeedback = async (msg, index, feedbackType) => {
+    if (!selectedClassroom || !msg || msg.role !== "ai" || msg.system) return;
+    if (feedbackType !== "up" && feedbackType !== "down") return;
+
+    const key = getFeedbackKey(msg, index);
+    const previous = feedbackByResponse[key];
+
+    setFeedbackByResponse(prev => ({ ...prev, [key]: feedbackType }));
+    setFeedbackBusy(prev => ({ ...prev, [key]: true }));
+
+    try {
+      await axios.post("/api/chat/feedback", {
+        classroom_id: String(selectedClassroom.id),
+        session_id: localStorage.getItem("sessionId") || selectedSessionId || "",
+        response_id: msg.response_id || null,
+        feedback: feedbackType,
+        reply_text: msg.content || "",
+        had_citations: !!(msg.citations && msg.citations.length > 0),
+      });
+    } catch {
+      setFeedbackByResponse(prev => ({ ...prev, [key]: previous }));
+      alert("Failed to submit feedback. Please try again.");
+    } finally {
+      setFeedbackBusy(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleAttachmentUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedClassroom) return;
+
+    setAttachmentUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("classroom_id", String(selectedClassroom.id));
+
+      const res = await axios.post("/api/chat/parse-attachment", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      const payload = {
+        name: res.data.filename || file.name,
+        fileType: res.data.file_type || "FILE",
+        text: res.data.extracted_text || "",
+      };
+
+      if (!payload.text.trim()) {
+        alert("No readable text found in the uploaded file.");
+      } else {
+        setAttachmentContext(prev => [...prev, payload]);
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((d) => d?.msg || JSON.stringify(d)).join("; ")
+        : (typeof detail === "string" && detail.trim() ? detail : "Failed to parse attachment. Make sure backend is running and file is readable.");
+      alert(message);
+    } finally {
+      setAttachmentUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const removeAttachment = (index) => {
+    setAttachmentContext(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleSend = async (e) => {
     e?.preventDefault();
-    if (!input.trim() || !selectedClassroom || loading) return;
-    const userMsg = input.trim();
-    setMessages(prev => [...prev, { role: "user", content: userMsg }]);
+    if ((!input.trim() && attachmentContext.length === 0) || !selectedClassroom || loading || attachmentUploading) return;
+
+    const typedMsg = input.trim();
+    const userMsg = typedMsg || "Please help me using my uploaded content.";
+    const attachmentSummary = attachmentContext.length > 0
+      ? `\n\n[Attached files: ${attachmentContext.map(a => a.name).join(", ")}]`
+      : "";
+    const attachmentBlock = attachmentContext.length > 0
+      ? `\n\n[STUDENT_UPLOADED_CONTENT]\n${attachmentContext.map((a, idx) =>
+          `Attachment ${idx + 1}: ${a.name} (${a.fileType})\n${a.text}`
+        ).join("\n\n")}`
+      : "";
+
+    const queryToSend = `${userMsg}${attachmentBlock}`;
+
+    setMessages(prev => [...prev, { role: "user", content: `${userMsg}${attachmentSummary}` }]);
     setInput("");
+    setAttachmentContext([]);
     setLoading(true);
     const sessionId = localStorage.getItem("sessionId");
     try {
-      const res = await axios.post("http://localhost:8000/api/chat", {
+      const res = await axios.post("/api/chat", {
         classroom_id: String(selectedClassroom.id),
         session_id: sessionId,
-        query: userMsg,
+        query: queryToSend,
         history: messages.map(m => ({ role: m.role, content: m.content })),
       });
-      setMessages(prev => [...prev, { role: "ai", content: res.data.reply, citations: res.data.citations }]);
+      setMessages(prev => [...prev, {
+        role: "ai",
+        content: res.data.reply,
+        citations: res.data.citations,
+        response_id: res.data.response_id || null,
+      }]);
       fetchChatHistory(selectedClassroom.id);
     } catch {
-      setMessages(prev => [...prev, { role: "ai", content: "An error occurred connecting to the tutor." }]);
+      setMessages(prev => [...prev, { role: "ai", content: "An error occurred connecting to the tutor.", system: true }]);
     }
     setLoading(false);
+  };
+
+  const handleVoiceToggle = () => {
+    if (!speechRecognitionRef.current || loading) return;
+    if (isListening) {
+      speechRecognitionRef.current.stop();
+      return;
+    }
+    voiceBaseInputRef.current = input;
+    setIsListening(true);
+    try {
+      speechRecognitionRef.current.start();
+    } catch {
+      setIsListening(false);
+    }
+  };
+
+  const handleSpeakMessage = (content, index) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const synth = window.speechSynthesis;
+
+    if (speakingIndex === index) {
+      synth.cancel();
+      setSpeakingIndex(null);
+      return;
+    }
+
+    synth.cancel();
+    const cleanText = String(content || "")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/\$\$/g, " ")
+      .replace(/\$/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleanText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onend = () => setSpeakingIndex(null);
+    utterance.onerror = () => setSpeakingIndex(null);
+
+    setSpeakingIndex(index);
+    synth.speak(utterance);
   };
 
   const handleKeyDown = (e) => {
@@ -1019,7 +1428,7 @@ export default function Home() {
     if (!selectedClassroom || !noteName) return;
     try {
       setDownloadingNote(noteName);
-      const res = await axios.get(`http://localhost:8000/api/notes/${encodeURIComponent(noteName)}/download`, {
+      const res = await axios.get(`/api/notes/${encodeURIComponent(noteName)}/download`, {
         params: { classroom_id: String(selectedClassroom.id) }, responseType: "blob",
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -1033,7 +1442,7 @@ export default function Home() {
     if (!selectedClassroom || notes.length === 0) return;
     try {
       setDownloadingAllNotes(true);
-      const res = await axios.get("http://localhost:8000/api/notes/download-all", {
+      const res = await axios.get("/api/notes/download-all", {
         params: { classroom_id: String(selectedClassroom.id) }, responseType: "blob",
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -1042,6 +1451,36 @@ export default function Home() {
       document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
     } catch (err) { alert(err.response?.data?.detail || "Failed to download all"); }
     finally { setDownloadingAllNotes(false); }
+  };
+
+  const handleViewNote = async (noteName) => {
+    if (!selectedClassroom || !noteName) return;
+    const viewerWindow = window.open("", "_blank");
+    if (!viewerWindow) {
+      alert("Popup blocked. Please allow popups for this site to view documents.");
+      return;
+    }
+    try {
+      setViewingNote(noteName);
+      viewerWindow.document.title = `Opening ${noteName}...`;
+      viewerWindow.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 16px;">Loading document...</p>';
+      const res = await axios.get(`/api/notes/${encodeURIComponent(noteName)}/view`, {
+        params: { classroom_id: String(selectedClassroom.id) },
+        responseType: "blob",
+      });
+      const contentType = res.headers["content-type"] || "application/octet-stream";
+      const blob = new Blob([res.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
+      viewerWindow.location.href = url;
+      setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.close();
+      }
+      alert(err.response?.data?.detail || "Failed to open document");
+    } finally {
+      setViewingNote("");
+    }
   };
 
   const notesMetaByName = (notesMeta || []).reduce((acc, item) => {
@@ -1193,7 +1632,7 @@ export default function Home() {
                 {classrooms.length === 0 ? (
                   <div className="course-empty">
                     <div className="ce-icon">📚</div>
-                    <div>You haven't joined any classrooms yet.</div>
+                    <div>You haven&apos;t joined any classrooms yet.</div>
                     <div style={{ fontSize: "0.82rem", color: "var(--text-3)" }}>
                       Use the join code above to enrol.
                     </div>
@@ -1298,13 +1737,24 @@ export default function Home() {
                           <div className="mat-name">{note}</div>
                           <div className="mat-size">{formatBytes(notesMetaByName[note]?.size_bytes || 0)}</div>
                         </div>
-                        <button
-                          className="mat-dl-btn"
-                          onClick={() => handleDownloadNote(note)}
-                          disabled={downloadingNote === note}
-                        >
-                          <Download size={13}/>
-                        </button>
+                        <div className="mat-actions">
+                          <button
+                            className="mat-dl-btn"
+                            onClick={() => handleViewNote(note)}
+                            disabled={viewingNote === note}
+                            title="View document"
+                          >
+                            <Eye size={13}/>
+                          </button>
+                          <button
+                            className="mat-dl-btn"
+                            onClick={() => handleDownloadNote(note)}
+                            disabled={downloadingNote === note}
+                            title="Download document"
+                          >
+                            <Download size={13}/>
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1334,9 +1784,44 @@ export default function Home() {
                       {msg.role === "ai" ? "✦" : auth.username?.[0]?.toUpperCase() || "U"}
                     </div>
                     <div className="msg-body">
-                      <div className="msg-who">{msg.role === "ai" ? "AI Tutor" : "You"}</div>
+                      <div className="msg-head">
+                        <div className="msg-who">{msg.role === "ai" ? "AI Tutor" : "You"}</div>
+                        {msg.role === "ai" && (
+                          <>
+                            <button
+                              className="msg-action-btn"
+                              title={speakingIndex === i ? "Stop voice" : "Read aloud"}
+                              onClick={() => handleSpeakMessage(msg.content, i)}
+                            >
+                              <Volume2 size={13} />
+                            </button>
+                            {!msg.system && (
+                              <>
+                                <button
+                                  className={`msg-action-btn ${feedbackByResponse[getFeedbackKey(msg, i)] === "up" ? "active-up" : ""}`}
+                                  title="Helpful"
+                                  onClick={() => handleFeedback(msg, i, "up")}
+                                  disabled={!!feedbackBusy[getFeedbackKey(msg, i)]}
+                                >
+                                  <ThumbsUp size={13} />
+                                </button>
+                                <button
+                                  className={`msg-action-btn ${feedbackByResponse[getFeedbackKey(msg, i)] === "down" ? "active-down" : ""}`}
+                                  title="Not helpful"
+                                  onClick={() => handleFeedback(msg, i, "down")}
+                                  disabled={!!feedbackBusy[getFeedbackKey(msg, i)]}
+                                >
+                                  <ThumbsDown size={13} />
+                                </button>
+                              </>
+                            )}
+                          </>
+                        )}
+                      </div>
                       <div className={`msg-bubble ${msg.role}`}>
-                        <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{msg.content}</p>
+                        <div className="markdown-content">
+                          {renderMessageContent(msg.content)}
+                        </div>
                         {msg.citations && msg.citations.length > 0 && (
                           <div className="citations-row">
                             {msg.citations.map((cite, ci) => (
@@ -1364,7 +1849,50 @@ export default function Home() {
               </div>
 
               <div className="c-input-wrap">
+                {attachmentContext.length > 0 && (
+                  <div className="c-attach-list">
+                    {attachmentContext.map((item, idx) => (
+                      <div className="c-attach-chip" key={`${item.name}-${idx}`}>
+                        <span className="c-attach-chip-name">{item.fileType}: {item.name}</span>
+                        <button
+                          className="c-attach-remove"
+                          onClick={() => removeAttachment(idx)}
+                          title="Remove attachment"
+                          type="button"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="c-input-row">
+                  <button
+                    className={`c-send-btn attach ${attachmentUploading ? "busy" : ""}`}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={loading || attachmentUploading}
+                    title="Upload image (incl. HEIC), text, or PDF"
+                    type="button"
+                  >
+                    <Paperclip size={15} />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    className="c-hidden-file"
+                    type="file"
+                    accept=".txt,.md,.csv,.pdf,.heic,.heif,.tif,.tiff,image/*"
+                    onChange={handleAttachmentUpload}
+                  />
+                  {speechSupported && (
+                    <button
+                      className={`c-send-btn voice ${isListening ? "listening" : ""}`}
+                      onClick={handleVoiceToggle}
+                      disabled={loading}
+                      title={isListening ? "Stop recording" : "Start voice input"}
+                    >
+                      {isListening ? <Square size={15}/> : <Mic size={15}/>}
+                    </button>
+                  )}
                   <textarea
                     ref={textareaRef}
                     className="c-textarea"
@@ -1378,12 +1906,12 @@ export default function Home() {
                   <button
                     className="c-send-btn"
                     onClick={handleSend}
-                    disabled={loading || !input.trim()}
+                    disabled={loading || attachmentUploading || (!input.trim() && attachmentContext.length === 0)}
                   >
                     <Send size={16}/>
                   </button>
                 </div>
-                <p className="c-input-hint">Enter to send · Shift+Enter for new line</p>
+                <p className="c-input-hint">Upload image/text/pdf · Enter to send · Shift+Enter for new line · Use $...$ or $$...$$ for math · Use mermaid code blocks for diagrams</p>
               </div>
             </main>
           </div>

@@ -54,6 +54,76 @@ class IngestionPipeline:
         self.child_chunk_size = 400
         self.child_chunk_overlap = 50
 
+    def _ingest_text_chunks(self, text: str, page_meta: dict, collection) -> int:
+        """Chunk and embed text, returning number of child chunks written."""
+        inserted = 0
+
+        parents = split_text(
+            text,
+            chunk_size=self.parent_chunk_size,
+            chunk_overlap=self.parent_chunk_overlap,
+        )
+
+        for parent in parents:
+            parent_id = str(uuid.uuid4())
+            parent_text = parent
+
+            children = split_text(
+                parent_text,
+                chunk_size=self.child_chunk_size,
+                chunk_overlap=self.child_chunk_overlap,
+            )
+            if not children:
+                continue
+
+            embeddings = self.model.encode(children).tolist()
+
+            child_metadatas = []
+            for _ in children:
+                meta = page_meta.copy()
+                meta.update({
+                    "parent_id": parent_id,
+                    "parent_text": parent_text,
+                })
+                child_metadatas.append(meta)
+
+            collection.add(
+                ids=[f"child_{uuid.uuid4().hex}" for _ in children],
+                embeddings=embeddings,
+                metadatas=child_metadatas,
+                documents=children
+            )
+            inserted += len(children)
+
+        return inserted
+
+    def process_text(self, text: str, source_filename: str, force_reindex: bool = True):
+        """Process already-extracted text into this classroom's collection."""
+        source_name = source_filename or "uploaded_text.txt"
+        collection = self.client.get_or_create_collection(name=self.collection_name)
+
+        print(f"Ingesting extracted text: {source_name} into collection: {self.collection_name}")
+
+        if force_reindex:
+            try:
+                results = collection.get(where={"source_file": source_name}, include=[])
+                if results and results.get("ids") and len(results["ids"]) > 0:
+                    print(f"Found {len(results['ids'])} existing chunks for {source_name}. Deleting for re-index...")
+                    collection.delete(ids=results["ids"])
+            except Exception as e:
+                print(f"Delete existing docs failed (maybe collection empty): {e}")
+
+        page_meta = {
+            "source": source_name,
+            "source_file": source_name,
+            "page": 1,
+            "classroom_id": self.classroom_id,
+        }
+
+        inserted = self._ingest_text_chunks(text or "", page_meta, collection)
+        print(f"Ingestion complete for {source_name} into {self.collection_name}. chunks={inserted}")
+        return inserted
+
     def process_pdf(self, pdf_file: Path, source_filename: str = None, force_reindex: bool = True):
         """Process one PDF into this classroom's isolated collection."""
         pdf_path = Path(pdf_file)
@@ -73,6 +143,7 @@ class IngestionPipeline:
                 print(f"Delete existing docs failed (maybe collection empty): {e}")
 
         reader = PdfReader(str(pdf_path))
+        inserted = 0
 
         for page_index, page in enumerate(reader.pages):
             page_text = page.extract_text() or ""
@@ -86,45 +157,9 @@ class IngestionPipeline:
                 "classroom_id": self.classroom_id,
             }
 
-            # 1. Create Parent Chunks (The "Why" and Context)
-            parents = split_text(
-                page_text,
-                chunk_size=self.parent_chunk_size,
-                chunk_overlap=self.parent_chunk_overlap,
-            )
-
-            for parent in parents:
-                parent_id = str(uuid.uuid4())
-                parent_text = parent
-
-                # 2. Create Child Chunks (The "What" for searching)
-                children = split_text(
-                    parent_text,
-                    chunk_size=self.child_chunk_size,
-                    chunk_overlap=self.child_chunk_overlap,
-                )
-                if not children:
-                    continue
-
-                # Generate embeddings for children ONLY for high-precision matching
-                embeddings = self.model.encode(children).tolist()
-
-                child_metadatas = []
-                for child_text in children:
-                    meta = page_meta.copy()
-                    meta.update({
-                        "parent_id": parent_id,
-                        "parent_text": parent_text,  # Full context for the LLM
-                    })
-                    child_metadatas.append(meta)
-
-                collection.add(
-                    ids=[f"child_{uuid.uuid4().hex}" for _ in children],
-                    embeddings=embeddings,
-                    metadatas=child_metadatas,
-                    documents=children
-                )
-        print(f"Ingestion complete for {source_name} into {self.collection_name}.")
+            inserted += self._ingest_text_chunks(page_text, page_meta, collection)
+        print(f"Ingestion complete for {source_name} into {self.collection_name}. chunks={inserted}")
+        return inserted
 
 
     def process_pdfs(self):

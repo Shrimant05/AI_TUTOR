@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
-import { UploadCloud, FileText, Users, AlertTriangle, Trash2, Database, LogOut, Plus, BookOpen } from 'lucide-react';
+import { UploadCloud, FileText, Users, AlertTriangle, Trash2, Database, LogOut, Plus, BookOpen, Eye, Download } from 'lucide-react';
 import { loadAuthSession, clearAuthSession, syncAuthSessionWithServer } from '../../lib/authStorage';
 import { Bar, Radar } from 'react-chartjs-2';
 import {
@@ -26,11 +26,19 @@ export default function Dashboard() {
   const [notes, setNotes] = useState([]);
   const [topicMatrix, setTopicMatrix] = useState({ labels: [], matrix: [] });
   const [topicClusters, setTopicClusters] = useState([]);
+  const [latencyStats, setLatencyStats] = useState({
+    measured_responses: 0,
+    overall_avg_response_time_ms: 0,
+    overall_max_response_time_ms: 0,
+    users: [],
+  });
   
   const [uploading, setUploading] = useState(false);
   const [creatingRoom, setCreatingRoom] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [newRoomName, setNewRoomName] = useState("");
+  const [downloadingNote, setDownloadingNote] = useState("");
+  const [viewingNote, setViewingNote] = useState("");
 
   const buildFallbackMatrix = (items) => {
     const labels = (items || []).map((item) => item.topic).filter(Boolean).slice(0, 8);
@@ -152,11 +160,12 @@ export default function Dashboard() {
     fetchStudentInsights();
     fetchTopicStudents();
     fetchAdvancedAnalytics();
+    fetchLatencyStats();
   }, [selectedClassroom]);
 
   const fetchClassrooms = async () => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/classrooms?t=${new Date().getTime()}`);
+      const res = await axios.get(`/api/classrooms?t=${new Date().getTime()}`);
       const fetchedClassrooms = res.data.classrooms || [];
       setClassrooms(fetchedClassrooms);
       if (fetchedClassrooms.length > 0 && !selectedClassroom) {
@@ -182,7 +191,7 @@ export default function Dashboard() {
     setCreatingRoom(true);
     setActionMessage("Creating classroom...");
     try {
-      await axios.post("http://localhost:8000/api/classrooms", { name: roomName });
+      await axios.post("/api/classrooms", { name: roomName });
       setNewRoomName("");
 
       const refreshedClassrooms = await fetchClassrooms();
@@ -207,7 +216,7 @@ export default function Dashboard() {
   const fetchStats = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/stats?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/stats?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStats(res.data);
     } catch (e) {
       console.error('Failed to fetch stats:', e);
@@ -217,7 +226,7 @@ export default function Dashboard() {
   const fetchStudentInsights = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStudentInsights(res.data.student_insights || []);
     } catch (e) {
       setStudentInsights([]);
@@ -229,8 +238,8 @@ export default function Dashboard() {
       if (!selectedClassroom) return;
       const t = Date.now();
       const [matrixRes, clusterRes] = await Promise.all([
-        axios.get(`http://localhost:8000/api/dashboard/topic-matrix?classroom_id=${selectedClassroom.id}&t=${t}`),
-        axios.get(`http://localhost:8000/api/dashboard/topic-clusters?classroom_id=${selectedClassroom.id}&t=${t}`)
+        axios.get(`/api/dashboard/topic-matrix?classroom_id=${selectedClassroom.id}&t=${t}`),
+        axios.get(`/api/dashboard/topic-clusters?classroom_id=${selectedClassroom.id}&t=${t}`)
       ]);
       setTopicMatrix(matrixRes.data || { labels: [], matrix: [] });
       setTopicClusters(clusterRes.data.clusters || []);
@@ -243,7 +252,7 @@ export default function Dashboard() {
   const fetchTopicStudents = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       console.log('Topic students:', res.data);
       setTopicStudents(res.data.topic_insights || []);
     } catch (e) {
@@ -252,10 +261,30 @@ export default function Dashboard() {
     }
   };
 
+  const fetchLatencyStats = async () => {
+    try {
+      if (!selectedClassroom) return;
+      const res = await axios.get(`/api/dashboard/latency?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      setLatencyStats({
+        measured_responses: Number(res.data.measured_responses || 0),
+        overall_avg_response_time_ms: Number(res.data.overall_avg_response_time_ms || 0),
+        overall_max_response_time_ms: Number(res.data.overall_max_response_time_ms || 0),
+        users: Array.isArray(res.data.users) ? res.data.users : [],
+      });
+    } catch (e) {
+      setLatencyStats({
+        measured_responses: 0,
+        overall_avg_response_time_ms: 0,
+        overall_max_response_time_ms: 0,
+        users: [],
+      });
+    }
+  };
+
   const fetchNotes = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/notes?classroom_id=${selectedClassroom.id}&t=${new Date().getTime()}`);
+      const res = await axios.get(`/api/notes?classroom_id=${selectedClassroom.id}&t=${new Date().getTime()}`);
       setNotes(res.data.notes || []);
     } catch (e) {}
   };
@@ -271,7 +300,7 @@ export default function Dashboard() {
     formData.append("classroom_id", selectedClassroom.id);
 
     try {
-      await axios.post("http://localhost:8000/api/upload_notes", formData, {
+      await axios.post("/api/upload_notes", formData, {
         headers: { "Content-Type": "multipart/form-data" }
       });
       setActionMessage(`Success! Indexed ${file.name}`);
@@ -287,11 +316,64 @@ export default function Dashboard() {
     if (!selectedClassroom || !confirm(`Are you sure you want to delete ${filename}?`)) return;
     setActionMessage(`Deleting ${filename}...`);
     try {
-      await axios.delete(`http://localhost:8000/api/notes/${filename}?classroom_id=${selectedClassroom.id}`);
+      await axios.delete(`/api/notes/${filename}?classroom_id=${selectedClassroom.id}`);
       setActionMessage(`Successfully deleted ${filename}`);
       fetchNotes();
     } catch (err) {
       setActionMessage("Failed to delete document.");
+    }
+  };
+
+  const handleViewNote = async (filename) => {
+    if (!selectedClassroom || !filename) return;
+    const viewerWindow = window.open('', '_blank');
+    if (!viewerWindow) {
+      setActionMessage('Popup blocked. Please allow popups for this site to view documents.');
+      return;
+    }
+    try {
+      setViewingNote(filename);
+      viewerWindow.document.title = `Opening ${filename}...`;
+      viewerWindow.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 16px;">Loading document...</p>';
+      const res = await axios.get(`/api/notes/${encodeURIComponent(filename)}/view`, {
+        params: { classroom_id: String(selectedClassroom.id) },
+        responseType: 'blob',
+      });
+      const contentType = res.headers['content-type'] || 'application/octet-stream';
+      const blob = new Blob([res.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
+      viewerWindow.location.href = url;
+      setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.close();
+      }
+      setActionMessage('Failed to open document.');
+    } finally {
+      setViewingNote("");
+    }
+  };
+
+  const handleDownloadNote = async (filename) => {
+    if (!selectedClassroom || !filename) return;
+    try {
+      setDownloadingNote(filename);
+      const res = await axios.get(`/api/notes/${encodeURIComponent(filename)}/download`, {
+        params: { classroom_id: String(selectedClassroom.id) },
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.setAttribute('download', filename);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setActionMessage('Failed to download document.');
+    } finally {
+      setDownloadingNote("");
     }
   };
 
@@ -330,6 +412,28 @@ export default function Dashboard() {
   const studentNameById = Object.fromEntries(
     (studentInsights || []).map((student) => [student.user_id, student.student_name])
   );
+
+  const latencyChartData = {
+    labels: (latencyStats.users || []).map((u) => u.student_name || u.user_id),
+    datasets: [
+      {
+        label: 'Average Response Time (ms)',
+        data: (latencyStats.users || []).map((u) => Number(u.avg_response_time_ms || 0)),
+        backgroundColor: 'rgba(79, 124, 255, 0.75)',
+        borderColor: 'rgba(79, 124, 255, 1)',
+        borderWidth: 1,
+        borderRadius: 6,
+      },
+      {
+        label: 'Maximum Response Time (ms)',
+        data: (latencyStats.users || []).map((u) => Number(u.max_response_time_ms || 0)),
+        backgroundColor: 'rgba(255, 159, 64, 0.75)',
+        borderColor: 'rgba(255, 159, 64, 1)',
+        borderWidth: 1,
+        borderRadius: 6,
+      },
+    ],
+  };
 
   return (
     <div style={{
@@ -420,6 +524,14 @@ export default function Dashboard() {
             <div className="stat-card glass-panel">
               <h3><Users size={20} style={{verticalAlign: 'middle', marginRight: '8px'}}/> Active Students</h3>
               <p className="value">{stats.active_students}</p>
+            </div>
+            <div className="stat-card glass-panel">
+              <h3><AlertTriangle size={20} style={{verticalAlign: 'middle', marginRight: '8px'}}/> Avg Response Time</h3>
+              <p className="value">{latencyStats.overall_avg_response_time_ms.toFixed(1)} ms</p>
+            </div>
+            <div className="stat-card glass-panel">
+              <h3><AlertTriangle size={20} style={{verticalAlign: 'middle', marginRight: '8px'}}/> Max Response Time</h3>
+              <p className="value">{latencyStats.overall_max_response_time_ms.toFixed(1)} ms</p>
             </div>
           </div>
 
@@ -571,16 +683,34 @@ export default function Dashboard() {
                           padding: '8px 12px', background: 'rgba(255,255,255,0.05)', 
                           borderRadius: '6px', marginBottom: '8px', fontSize: '0.9rem'
                         }}>
-                          <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '70%'}}>
+                          <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '58%'}}>
                             {note}
                           </span>
-                          <button 
-                            onClick={() => handleDeleteNote(note)}
-                            style={{background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: '4px'}}
-                            title="Delete and Purge Vectors"
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              onClick={() => handleViewNote(note)}
+                              disabled={viewingNote === note}
+                              style={{background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px'}}
+                              title="View document"
+                            >
+                              <Eye size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleDownloadNote(note)}
+                              disabled={downloadingNote === note}
+                              style={{background: 'transparent', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', padding: '4px'}}
+                              title="Download document"
+                            >
+                              <Download size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteNote(note)}
+                              style={{background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: '4px'}}
+                              title="Delete and Purge Vectors"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>
@@ -674,6 +804,47 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
+            </div>
+          </div>
+
+          <div className="dashboard-grid" style={{ gridTemplateColumns: '1fr', marginTop: '20px' }}>
+            <div className="glass-panel chart-container">
+              <h3 style={{marginBottom: '20px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '10px'}}>
+                Latency vs User ({selectedClassroom.name})
+              </h3>
+              {latencyStats.users.length === 0 ? (
+                <p style={{color: 'var(--text-secondary)'}}>No latency data recorded yet for this classroom.</p>
+              ) : (
+                <Bar
+                  data={latencyChartData}
+                  options={{
+                    responsive: true,
+                    plugins: {
+                      legend: { position: 'top' },
+                      title: { display: false },
+                    },
+                    scales: {
+                      x: {
+                        ticks: { color: 'var(--text-secondary)', maxRotation: 25, minRotation: 0 },
+                        grid: { color: 'rgba(255,255,255,0.06)' },
+                      },
+                      y: {
+                        beginAtZero: true,
+                        ticks: { color: 'var(--text-secondary)' },
+                        grid: { color: 'rgba(255,255,255,0.08)' },
+                        title: {
+                          display: true,
+                          text: 'Milliseconds',
+                          color: 'var(--text-secondary)',
+                        },
+                      },
+                    },
+                  }}
+                />
+              )}
+              <p style={{marginTop: '10px', color: 'var(--text-secondary)', fontSize: '0.85rem'}}>
+                Measured responses: {latencyStats.measured_responses}
+              </p>
             </div>
           </div>
         </>

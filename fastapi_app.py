@@ -6,6 +6,12 @@ import zipfile
 import random
 import string
 import re
+import tempfile
+import base64
+import mimetypes
+import time
+import requests
+import uuid
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
@@ -25,7 +31,7 @@ from src.database import (
     create_classroom, join_classroom,
     get_classrooms_for_faculty, get_classrooms_for_student,
     get_student_query_insights, get_topic_wise_student_doubts, 
-    get_student_doubts_by_topic
+    get_student_doubts_by_topic, get_latency_stats, save_chat_feedback, get_feedback_preferences
 )
 from src.mongo_auth import (
     init_mongo_auth, create_auth_user, get_auth_user_by_username,
@@ -35,8 +41,19 @@ from src.mongo_auth import (
 )
 from src.config import DATA_DIR, normalize_classroom_id
 from src.config import GOOGLE_CLIENT_ID
+from src.config import GEMINI_API_KEY, GEMINI_VISION_MODEL
 from src.main import _student_unable_to_answer, _student_attempted_solution
 from src.auth import get_password_hash, verify_password, create_access_token, get_current_user
+from pypdf import PdfReader
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
+try:
+    from paddleocr import PaddleOCR
+except Exception:
+    PaddleOCR = None
 
 app = FastAPI()
 
@@ -49,6 +66,103 @@ app.add_middleware(
 )
 
 os.makedirs(DATA_DIR, exist_ok=True)
+_ocr_engine = None
+
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if PaddleOCR is None:
+        return None
+    if _ocr_engine is None:
+        try:
+            _ocr_engine = PaddleOCR(use_angle_cls=True, lang="en")
+        except Exception:
+            return None
+    return _ocr_engine
+
+
+def _extract_text_from_ocr_result(result) -> str:
+    lines = []
+    for block in result or []:
+        for item in block or []:
+            try:
+                text = str(item[1][0]).strip()
+            except Exception:
+                text = ""
+            if text:
+                lines.append(text)
+    return "\n".join(lines)
+
+
+def _run_ocr(engine, image_path: str):
+    """Run OCR across PaddleOCR versions where `cls` may or may not be supported."""
+    try:
+        return engine.ocr(image_path, cls=True)
+    except TypeError:
+        # Newer PaddleOCR versions can reject cls in predict/ocr path.
+        try:
+            return engine.ocr(image_path)
+        except Exception:
+            return []
+    except Exception:
+        # Any Paddle runtime/Ops/OneDNN issue should trigger cloud fallback, not fail the request.
+        return []
+
+
+def _gemini_vision_ocr(image_items: list[tuple[bytes, str]]) -> str:
+    """Use Gemini Vision as OCR fallback for images/scanned PDFs."""
+    if not GEMINI_API_KEY or not image_items:
+        return ""
+
+    configured = (GEMINI_VISION_MODEL or "").strip().replace("models/", "")
+    candidate_models = [
+        configured,
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    candidate_models = [m for i, m in enumerate(candidate_models) if m and m not in candidate_models[:i]]
+
+    parts = [{
+        "text": "Transcribe all readable text from these study images. Preserve equations and symbols. Return plain text only."
+    }]
+
+    for image_bytes, mime_type in image_items:
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": base64.b64encode(image_bytes).decode("utf-8")
+            }
+        })
+
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 4096,
+        },
+    }
+
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            resp = requests.post(url, json=payload, timeout=45)
+            if not resp.ok:
+                continue
+            data = resp.json()
+            text = (
+                data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                    .strip()
+            )
+            if text:
+                return text
+        except Exception:
+            continue
+
+    return ""
 
 @app.on_event("startup")
 def startup_event():
@@ -303,6 +417,123 @@ class ChatResponse(BaseModel):
     reply: str
     intent: str
     citations: list = []
+    response_id: Optional[str] = None
+
+
+class ChatFeedbackRequest(BaseModel):
+    classroom_id: str
+    session_id: Optional[str] = None
+    response_id: Optional[str] = None
+    feedback: str  # "up" | "down"
+    reply_text: Optional[str] = ""
+    had_citations: bool = False
+
+
+def _extract_attachment_text(filename: str, raw_bytes: bytes, content_type: str = "") -> tuple[str, str]:
+    ext = Path(filename or "").suffix.lower()
+    mime = (content_type or "").lower().strip()
+
+    if ext in {".txt", ".md", ".csv", ".json", ".py"}:
+        return (raw_bytes.decode("utf-8", errors="ignore"), "TEXT")
+
+    if ext == ".pdf":
+        chunks = []
+
+        # 1) Normal PDF text extraction
+        try:
+            reader = PdfReader(io.BytesIO(raw_bytes))
+            for page in reader.pages:
+                txt = (page.extract_text() or "").strip()
+                if txt:
+                    chunks.append(txt)
+        except Exception:
+            chunks = []
+
+        if chunks:
+            return ("\n".join(chunks), "PDF")
+
+        # 2) OCR fallback for scanned/image-only PDFs
+        if fitz is None:
+            return ("", "PDF")
+        engine = _get_ocr_engine()
+
+        try:
+            doc = fitz.open(stream=raw_bytes, filetype="pdf")
+        except Exception:
+            return ("", "PDF")
+
+        ocr_chunks = []
+        page_pngs = []
+        try:
+            for page in doc:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                try:
+                    page_png = pix.tobytes("png")
+                except Exception:
+                    page_png = b""
+                if page_png and len(page_pngs) < 6:
+                    page_pngs.append((page_png, "image/png"))
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+                        temp_file.write(page_png if page_png else pix.tobytes("png"))
+                        temp_path = temp_file.name
+                    if engine is not None:
+                        result = _run_ocr(engine, temp_path)
+                        text = _extract_text_from_ocr_result(result)
+                        if text.strip():
+                            ocr_chunks.append(text)
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+        finally:
+            doc.close()
+
+        local_text = "\n".join(ocr_chunks).strip()
+        if local_text:
+            return (local_text, "PDF")
+
+        # Cloud fallback for scanned PDFs
+        cloud_text = _gemini_vision_ocr(page_pngs)
+        return (cloud_text, "PDF")
+
+    image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff", ".heic", ".heif"}
+    if ext in image_exts or mime.startswith("image/"):
+        engine = _get_ocr_engine()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".bmp": "image/bmp",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+            ".heic": "image/heic",
+            ".heif": "image/heif",
+        }
+
+        local_text = ""
+        if engine is not None:
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+                    temp_file.write(raw_bytes)
+                    temp_path = temp_file.name
+
+                result = _run_ocr(engine, temp_path)
+                local_text = _extract_text_from_ocr_result(result)
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+        if local_text.strip():
+            return (local_text, "IMAGE")
+
+        cloud_text = _gemini_vision_ocr([(raw_bytes, mime_map.get(ext, mime if mime.startswith("image/") else "image/png"))])
+        return (cloud_text, "IMAGE")
+
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or 'unknown'}")
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest, current_user: dict = Depends(get_current_user)):
@@ -325,20 +556,22 @@ async def chat_endpoint(req: ChatRequest, current_user: dict = Depends(get_curre
         }
 
     retriever = HybridParentRetriever(classroom_id=classroom_id)
+    preference_hint = get_feedback_preferences(current_user["user_id"], classroom_id)
     
     intent = classify_intent(req.query, history=[h.dict() for h in req.history])
     unable = _student_unable_to_answer(req.query, history=[h.dict() for h in req.history])
     attempted = _student_attempted_solution(req.query, history=[h.dict() for h in req.history])
-    
-    log_query(current_user["user_id"], req.session_id, req.classroom_id, req.query, intent, unable, attempted)
-    
+
+    start_t = time.perf_counter()
     result_data = socratic_agent(
         req.query,
         retriever,
         history=[h.dict() for h in req.history],
         user_id=current_user["user_id"],
         allowed_sources=allowed_sources,
+        response_preferences=preference_hint,
     )
+    elapsed_ms = (time.perf_counter() - start_t) * 1000.0
     
     reply_text = result_data.get("reply", "I am having trouble processing that right now.")
     citations = result_data.get("citations", [])
@@ -347,6 +580,17 @@ async def chat_endpoint(req: ChatRequest, current_user: dict = Depends(get_curre
         topic_name = citations[0].get("file", "unknown_topic")
         confusion_val = 1 if (unable or intent == "HELP_REQUEST" or intent == "OFF_TOPIC") else 0
         log_topic(req.classroom_id, topic_name, confusion_added=confusion_val)
+
+    log_query(
+        current_user["user_id"],
+        req.session_id,
+        req.classroom_id,
+        req.query,
+        intent,
+        unable,
+        attempted,
+        response_time_ms=elapsed_ms,
+    )
 
     save_chat_history(
         user_id=current_user["user_id"],
@@ -357,12 +601,81 @@ async def chat_endpoint(req: ChatRequest, current_user: dict = Depends(get_curre
         intent=intent,
         citations=citations,
     )
+    response_id = str(uuid.uuid4())
     
     return ChatResponse(
         reply=reply_text, 
         intent=intent,
-        citations=citations
+        citations=citations,
+        response_id=response_id,
     )
+
+
+@app.post("/api/chat/feedback")
+async def chat_feedback(req: ChatFeedbackRequest, current_user: dict = Depends(get_current_user)):
+    classroom_id = _assert_classroom_access(req.classroom_id, current_user)
+    fb = (req.feedback or "").strip().lower()
+    if fb not in {"up", "down"}:
+        raise HTTPException(status_code=400, detail="feedback must be 'up' or 'down'")
+
+    save_chat_feedback(
+        user_id=current_user["user_id"],
+        classroom_id=classroom_id,
+        session_id=req.session_id or "",
+        response_id=(req.response_id or "").strip() or None,
+        feedback_value=1 if fb == "up" else -1,
+        response_length=len((req.reply_text or "").strip()),
+        had_citations=bool(req.had_citations),
+    )
+
+    return {"status": "ok", "feedback": fb, "classroom_id": classroom_id}
+
+
+@app.post("/api/chat/parse-attachment")
+async def parse_chat_attachment(
+    file: UploadFile = File(...),
+    classroom_id: str = Form(...),
+    current_user: dict = Depends(get_current_user)
+):
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large. Max size is 10MB")
+
+    try:
+        extracted_text, file_type = _extract_attachment_text(file.filename or "attachment", raw, file.content_type or "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse attachment: {str(e)}")
+    extracted_text = (extracted_text or "").strip()
+    notice = None
+    if not extracted_text:
+        if file_type == "IMAGE":
+            extracted_text = "[Image uploaded. OCR is not available in the current backend environment. Please type key points from the image in your message.]"
+            notice = "OCR unavailable"
+        elif file_type == "PDF":
+            extracted_text = "[PDF uploaded but no selectable text was found. If this is a scanned PDF, OCR is currently unavailable. Please type key points manually.]"
+            notice = "No extractable PDF text"
+        else:
+            raise HTTPException(status_code=400, detail="No readable text found in file")
+
+    max_chars = 12000
+    truncated = len(extracted_text) > max_chars
+    if truncated:
+        extracted_text = extracted_text[:max_chars]
+
+    return {
+        "filename": file.filename,
+        "classroom_id": classroom_id,
+        "file_type": file_type,
+        "extracted_text": extracted_text,
+        "truncated": truncated,
+        "notice": notice,
+    }
 
 
 @app.get("/api/chat/history")
@@ -406,6 +719,12 @@ async def student_insights(classroom_id: str, current_user: dict = Depends(get_c
         raise HTTPException(status_code=403, detail="Not authorized")
     return {"student_insights": get_student_query_insights(classroom_id)}
 
+@app.get("/api/dashboard/latency")
+async def dashboard_latency(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return get_latency_stats(classroom_id)
+
 @app.get("/api/dashboard/topic-students")
 async def topic_students(classroom_id: str, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "faculty":
@@ -431,14 +750,39 @@ async def upload_notes(
     class_dir = os.path.join(DATA_DIR, classroom_id)
     os.makedirs(class_dir, exist_ok=True)
     file_path = os.path.join(class_dir, file.filename)
+    ext = Path(file.filename or "").suffix.lower()
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(raw)
         
     pipeline = IngestionPipeline(classroom_id=classroom_id)
-    pipeline.process_pdf(file_path, file.filename, force_reindex=True)
-    
-    return {"filename": file.filename, "status": "indexed"}
+
+    if ext == ".txt":
+        text_data = raw.decode("utf-8", errors="ignore")
+        if not text_data.strip():
+            raise HTTPException(status_code=400, detail="Text file is empty")
+        chunks = pipeline.process_text(text_data, file.filename, force_reindex=True)
+        return {"filename": file.filename, "status": "indexed", "mode": "text", "chunks": chunks}
+
+    if ext != ".pdf":
+        raise HTTPException(status_code=400, detail="Unsupported file type. Faculty uploads support .pdf and .txt")
+
+    # First try native PDF extraction for speed and citations fidelity.
+    chunks = pipeline.process_pdf(file_path, file.filename, force_reindex=True)
+    if chunks > 0:
+        return {"filename": file.filename, "status": "indexed", "mode": "pdf-native", "chunks": chunks}
+
+    # Handwritten/scanned fallback: OCR + Gemini Vision extraction.
+    extracted_text, _ = _extract_attachment_text(file.filename or "attachment.pdf", raw, file.content_type or "application/pdf")
+    extracted_text = (extracted_text or "").strip()
+    if not extracted_text:
+        raise HTTPException(status_code=400, detail="Could not extract text from this PDF. Please ensure Gemini API key is configured or upload a clearer scan.")
+
+    chunks = pipeline.process_text(extracted_text, file.filename, force_reindex=True)
+    return {"filename": file.filename, "status": "indexed", "mode": "pdf-ocr", "chunks": chunks}
 
 @app.get("/api/notes")
 async def list_notes(classroom_id: str, current_user: dict = Depends(get_current_user)):
@@ -458,6 +802,34 @@ async def list_notes(classroom_id: str, current_user: dict = Depends(get_current
                 "file_type": "PDF" if ext == ".pdf" else "TXT" if ext == ".txt" else ext.replace(".", "").upper(),
             })
     return {"notes": files, "notes_meta": notes_meta}
+
+
+def _note_media_type(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return "application/pdf"
+    if ext == ".txt":
+        return "text/plain; charset=utf-8"
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
+@app.get("/api/notes/{filename}/view")
+async def view_note(filename: str, classroom_id: str, current_user: dict = Depends(get_current_user)):
+    classroom_id = _assert_classroom_access(classroom_id, current_user)
+    safe_filename = Path(filename).name
+    class_dir = os.path.join(DATA_DIR, classroom_id)
+    file_path = os.path.join(class_dir, safe_filename)
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=file_path,
+        filename=safe_filename,
+        media_type=_note_media_type(safe_filename),
+        headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
+    )
 
 
 @app.get("/api/notes/{filename}/download")
