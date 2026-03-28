@@ -11,10 +11,10 @@ if load_dotenv:
     env_path = Path(__file__).resolve().parents[1] / ".env"
     load_dotenv(dotenv_path=env_path)
 
-# Ollama Settings
-OLLAMA_HOST = "http://localhost:11434"
-LLM_MODEL = "llama3.1:8b"
-EMBED_MODEL = "all-MiniLM-L6-v2"
+# Gemini Text Model Settings
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-1.5-flash")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 
 # RAG Settings
 CHUNCK_SIZE = 1000
@@ -30,7 +30,6 @@ DB_DIR = os.path.join(BASE_DIR, "data", "vector_store")
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 MONGODB_DB = os.environ.get("MONGODB_DB", "ai_tutor_auth")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-1.5-flash")
 
 

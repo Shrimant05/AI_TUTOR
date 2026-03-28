@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import axios from 'axios';
+import { apiClient as axios } from '../../lib/apiClient';
 import { useRouter } from 'next/navigation';
 import { UploadCloud, FileText, Users, AlertTriangle, Trash2, Database, LogOut, Plus, BookOpen, Eye, Download } from 'lucide-react';
 import { loadAuthSession, clearAuthSession, syncAuthSessionWithServer } from '../../lib/authStorage';
@@ -165,7 +165,7 @@ export default function Dashboard() {
 
   const fetchClassrooms = async () => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/classrooms?t=${new Date().getTime()}`);
+      const res = await axios.get(`/api/classrooms?t=${new Date().getTime()}`);
       const fetchedClassrooms = res.data.classrooms || [];
       setClassrooms(fetchedClassrooms);
       if (fetchedClassrooms.length > 0 && !selectedClassroom) {
@@ -191,7 +191,7 @@ export default function Dashboard() {
     setCreatingRoom(true);
     setActionMessage("Creating classroom...");
     try {
-      await axios.post("http://localhost:8000/api/classrooms", { name: roomName });
+      await axios.post("/api/classrooms", { name: roomName });
       setNewRoomName("");
 
       const refreshedClassrooms = await fetchClassrooms();
@@ -216,7 +216,7 @@ export default function Dashboard() {
   const fetchStats = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/stats?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/stats?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStats(res.data);
     } catch (e) {
       console.error('Failed to fetch stats:', e);
@@ -226,7 +226,7 @@ export default function Dashboard() {
   const fetchStudentInsights = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/student-insights?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setStudentInsights(res.data.student_insights || []);
     } catch (e) {
       setStudentInsights([]);
@@ -238,8 +238,8 @@ export default function Dashboard() {
       if (!selectedClassroom) return;
       const t = Date.now();
       const [matrixRes, clusterRes] = await Promise.all([
-        axios.get(`http://localhost:8000/api/dashboard/topic-matrix?classroom_id=${selectedClassroom.id}&t=${t}`),
-        axios.get(`http://localhost:8000/api/dashboard/topic-clusters?classroom_id=${selectedClassroom.id}&t=${t}`)
+        axios.get(`/api/dashboard/topic-matrix?classroom_id=${selectedClassroom.id}&t=${t}`),
+        axios.get(`/api/dashboard/topic-clusters?classroom_id=${selectedClassroom.id}&t=${t}`)
       ]);
       setTopicMatrix(matrixRes.data || { labels: [], matrix: [] });
       setTopicClusters(clusterRes.data.clusters || []);
@@ -252,7 +252,7 @@ export default function Dashboard() {
   const fetchTopicStudents = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/topic-students?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       console.log('Topic students:', res.data);
       setTopicStudents(res.data.topic_insights || []);
     } catch (e) {
@@ -264,7 +264,7 @@ export default function Dashboard() {
   const fetchLatencyStats = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/dashboard/latency?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
+      const res = await axios.get(`/api/dashboard/latency?classroom_id=${selectedClassroom.id}&t=${Date.now()}`);
       setLatencyStats({
         measured_responses: Number(res.data.measured_responses || 0),
         overall_avg_response_time_ms: Number(res.data.overall_avg_response_time_ms || 0),
@@ -284,7 +284,7 @@ export default function Dashboard() {
   const fetchNotes = async () => {
     try {
       if (!selectedClassroom) return;
-      const res = await axios.get(`http://localhost:8000/api/notes?classroom_id=${selectedClassroom.id}&t=${new Date().getTime()}`);
+      const res = await axios.get(`/api/notes?classroom_id=${selectedClassroom.id}&t=${new Date().getTime()}`);
       setNotes(res.data.notes || []);
     } catch (e) {}
   };
@@ -300,7 +300,7 @@ export default function Dashboard() {
     formData.append("classroom_id", selectedClassroom.id);
 
     try {
-      await axios.post("http://localhost:8000/api/upload_notes", formData, {
+      await axios.post("/api/upload_notes", formData, {
         headers: { "Content-Type": "multipart/form-data" }
       });
       setActionMessage(`Success! Indexed ${file.name}`);
@@ -316,7 +316,7 @@ export default function Dashboard() {
     if (!selectedClassroom || !confirm(`Are you sure you want to delete ${filename}?`)) return;
     setActionMessage(`Deleting ${filename}...`);
     try {
-      await axios.delete(`http://localhost:8000/api/notes/${filename}?classroom_id=${selectedClassroom.id}`);
+      await axios.delete(`/api/notes/${filename}?classroom_id=${selectedClassroom.id}`);
       setActionMessage(`Successfully deleted ${filename}`);
       fetchNotes();
     } catch (err) {
@@ -335,7 +335,7 @@ export default function Dashboard() {
       setViewingNote(filename);
       viewerWindow.document.title = `Opening ${filename}...`;
       viewerWindow.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 16px;">Loading document...</p>';
-      const res = await axios.get(`http://localhost:8000/api/notes/${encodeURIComponent(filename)}/view`, {
+      const res = await axios.get(`/api/notes/${encodeURIComponent(filename)}/view`, {
         params: { classroom_id: String(selectedClassroom.id) },
         responseType: 'blob',
       });
@@ -358,7 +358,7 @@ export default function Dashboard() {
     if (!selectedClassroom || !filename) return;
     try {
       setDownloadingNote(filename);
-      const res = await axios.get(`http://localhost:8000/api/notes/${encodeURIComponent(filename)}/download`, {
+      const res = await axios.get(`/api/notes/${encodeURIComponent(filename)}/download`, {
         params: { classroom_id: String(selectedClassroom.id) },
         responseType: 'blob',
       });

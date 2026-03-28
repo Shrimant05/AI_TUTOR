@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import axios from "axios";
+import { apiClient as axios } from "../../lib/apiClient";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -1131,7 +1131,7 @@ export default function Home() {
   // ─── Data fetchers ────────────────────────────────────────
   const fetchClassrooms = async () => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/classrooms?t=${Date.now()}`);
+      const res = await axios.get(`/api/classrooms?t=${Date.now()}`);
       setClassrooms(res.data.classrooms || []);
     } catch (e) {
       if (e.response?.status === 401) { clearAuthSession(); router.push("/login"); }
@@ -1140,7 +1140,7 @@ export default function Home() {
 
   const fetchNotes = async (classroomId) => {
     try {
-      const res = await axios.get(`http://localhost:8000/api/notes?classroom_id=${classroomId}&t=${Date.now()}`);
+      const res = await axios.get(`/api/notes?classroom_id=${classroomId}&t=${Date.now()}`);
       setNotes(res.data.notes || []);
       setNotesMeta(res.data.notes_meta || []);
     } catch { setNotesMeta([]); }
@@ -1150,7 +1150,7 @@ export default function Home() {
     if (!classroomId) return;
     setHistoryLoading(true);
     try {
-      const res = await axios.get("http://localhost:8000/api/chat/history", {
+      const res = await axios.get("/api/chat/history", {
         params: { classroom_id: String(classroomId), limit: 500 },
       });
       const items = res.data.items || [];
@@ -1189,7 +1189,7 @@ export default function Home() {
       return;
     }
     try {
-      await axios.post("http://localhost:8000/api/classrooms/join", { join_code: normalizedCode });
+      await axios.post("/api/classrooms/join", { join_code: normalizedCode });
       setJoinCode("");
       await fetchClassrooms();
       alert("Joined classroom successfully.");
@@ -1259,7 +1259,7 @@ export default function Home() {
     setFeedbackBusy(prev => ({ ...prev, [key]: true }));
 
     try {
-      await axios.post("http://localhost:8000/api/chat/feedback", {
+      await axios.post("/api/chat/feedback", {
         classroom_id: String(selectedClassroom.id),
         session_id: localStorage.getItem("sessionId") || selectedSessionId || "",
         response_id: msg.response_id || null,
@@ -1285,7 +1285,7 @@ export default function Home() {
       formData.append("file", file);
       formData.append("classroom_id", String(selectedClassroom.id));
 
-      const res = await axios.post("http://localhost:8000/api/chat/parse-attachment", formData, {
+      const res = await axios.post("/api/chat/parse-attachment", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
@@ -1339,7 +1339,7 @@ export default function Home() {
     setLoading(true);
     const sessionId = localStorage.getItem("sessionId");
     try {
-      const res = await axios.post("http://localhost:8000/api/chat", {
+      const res = await axios.post("/api/chat", {
         classroom_id: String(selectedClassroom.id),
         session_id: sessionId,
         query: queryToSend,
@@ -1428,7 +1428,7 @@ export default function Home() {
     if (!selectedClassroom || !noteName) return;
     try {
       setDownloadingNote(noteName);
-      const res = await axios.get(`http://localhost:8000/api/notes/${encodeURIComponent(noteName)}/download`, {
+      const res = await axios.get(`/api/notes/${encodeURIComponent(noteName)}/download`, {
         params: { classroom_id: String(selectedClassroom.id) }, responseType: "blob",
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -1442,7 +1442,7 @@ export default function Home() {
     if (!selectedClassroom || notes.length === 0) return;
     try {
       setDownloadingAllNotes(true);
-      const res = await axios.get("http://localhost:8000/api/notes/download-all", {
+      const res = await axios.get("/api/notes/download-all", {
         params: { classroom_id: String(selectedClassroom.id) }, responseType: "blob",
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -1464,7 +1464,7 @@ export default function Home() {
       setViewingNote(noteName);
       viewerWindow.document.title = `Opening ${noteName}...`;
       viewerWindow.document.body.innerHTML = '<p style="font-family: sans-serif; padding: 16px;">Loading document...</p>';
-      const res = await axios.get(`http://localhost:8000/api/notes/${encodeURIComponent(noteName)}/view`, {
+      const res = await axios.get(`/api/notes/${encodeURIComponent(noteName)}/view`, {
         params: { classroom_id: String(selectedClassroom.id) },
         responseType: "blob",
       });

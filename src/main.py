@@ -3,28 +3,32 @@ import requests
 import re
 from typing import Set
 from .router import classify_intent
-from .config import OLLAMA_HOST, LLM_MODEL
+from .config import GEMINI_API_KEY, GEMINI_TEXT_MODEL
 
 def _call_llm(prompt, temperature=0.3, require_json=False):
+    if not GEMINI_API_KEY:
+        return None if not require_json else {"reply": "Sorry, I am having trouble connecting to my models.", "citations": []}
+
     payload = {
-        "model": LLM_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": temperature
-        }
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+        },
     }
     if require_json:
-        payload["format"] = "json"
+        payload["generationConfig"]["responseMimeType"] = "application/json"
 
     try:
+        model_name = (GEMINI_TEXT_MODEL or "gemini-1.5-flash").replace("models/", "")
         response = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}",
             json=payload,
             timeout=45
         )
         response.raise_for_status()
-        text = response.json().get("response", "").strip()
+        data = response.json()
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        text = "".join(part.get("text", "") for part in parts).strip()
         if require_json:
             try:
                 return json.loads(text)
@@ -32,7 +36,7 @@ def _call_llm(prompt, temperature=0.3, require_json=False):
                 return {"reply": text, "citations": []}
         return text or None
     except Exception as e:
-        print(f"Error calling LLM: {e}")
+        print(f"Error calling Gemini: {e}")
         return None if not require_json else {"reply": "Sorry, I am having trouble connecting to my models.", "citations": []}
 
 

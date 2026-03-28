@@ -1,5 +1,5 @@
 import requests
-from .config import OLLAMA_HOST, LLM_MODEL
+from .config import GEMINI_API_KEY, GEMINI_TEXT_MODEL
 
 def _is_social_or_greeting(query):
     text = query.strip().lower()
@@ -155,23 +155,27 @@ Categories:
 Return ONLY the category name.
 """
     
+    if not GEMINI_API_KEY:
+        return "COURSE_RELATED"
+
     try:
+        model_name = (GEMINI_TEXT_MODEL or "gemini-1.5-flash").replace("models/", "")
         response = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}",
             json={
-                "model": LLM_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
                     "temperature": 0.0
                 }
             },
             timeout=10
         )
         response.raise_for_status()
-        label = response.json().get("response", "").strip().upper()
+        data = response.json()
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        label = "".join(part.get("text", "") for part in parts).strip().upper()
     except Exception as e:
-        print(f"Error calling Ollama: {e}")
+        print(f"Error calling Gemini: {e}")
         return "COURSE_RELATED"
 
     normalized = label.split()[0] if label else "COURSE_RELATED"
