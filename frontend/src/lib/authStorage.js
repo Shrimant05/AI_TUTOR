@@ -1,4 +1,5 @@
 const AUTH_KEYS = ["token", "role", "username"];
+const AUTH_BASE_URL = "http://localhost:8000";
 
 function parseJwtPayload(token) {
   try {
@@ -73,7 +74,7 @@ export async function syncAuthSessionWithServer(token) {
   if (!token) return null;
 
   try {
-    const response = await fetch("/api/auth/me", {
+    const response = await fetch(`${AUTH_BASE_URL}/api/auth/me`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
