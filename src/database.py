@@ -205,6 +205,38 @@ def get_classrooms_for_student(student_id):
     conn.close()
     return [{"id": r[0], "name": r[1], "join_code": r[2]} for r in rows]
 
+
+def delete_classroom(classroom_id, faculty_id):
+    """Delete a classroom and all classroom-scoped analytics/mapping rows."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM classrooms WHERE id = ? AND faculty_id = ?",
+            (classroom_id, faculty_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        cursor.execute("DELETE FROM classroom_students WHERE classroom_id = ?", (classroom_id,))
+        cursor.execute("DELETE FROM conversations WHERE classroom_id = ?", (classroom_id,))
+        cursor.execute("DELETE FROM queries WHERE classroom_id = ?", (classroom_id,))
+        cursor.execute("DELETE FROM topic_logs WHERE classroom_id = ?", (classroom_id,))
+        cursor.execute("DELETE FROM chat_feedback WHERE classroom_id = ?", (classroom_id,))
+        cursor.execute(
+            "DELETE FROM classrooms WHERE id = ? AND faculty_id = ?",
+            (classroom_id, faculty_id),
+        )
+
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
 # Analytics wrappers
 def log_query(user_id, session_id, classroom_id, query_text, intent, is_unable_to_answer, has_attempted, response_time_ms=None):
     conn = sqlite3.connect(DB_PATH)

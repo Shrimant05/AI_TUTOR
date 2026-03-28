@@ -35,6 +35,7 @@ export default function Dashboard() {
   
   const [uploading, setUploading] = useState(false);
   const [creatingRoom, setCreatingRoom] = useState(false);
+  const [deletingClassroomId, setDeletingClassroomId] = useState(null);
   const [actionMessage, setActionMessage] = useState("");
   const [newRoomName, setNewRoomName] = useState("");
   const [downloadingNote, setDownloadingNote] = useState("");
@@ -210,6 +211,35 @@ export default function Dashboard() {
       alert(errorMessage);
     } finally {
       setCreatingRoom(false);
+    }
+  };
+
+  const handleDeleteClassroom = async (classroom) => {
+    if (!classroom) return;
+
+    const confirmed = window.confirm(
+      `Delete classroom "${classroom.name}"? This will remove enrolled mappings, uploaded notes, vectors, and analytics for this classroom.`
+    );
+    if (!confirmed) return;
+
+    setDeletingClassroomId(classroom.id);
+    setActionMessage(`Deleting classroom "${classroom.name}"...`);
+    try {
+      await axios.delete(`/api/classrooms/${classroom.id}`);
+
+      const refreshedClassrooms = await fetchClassrooms();
+      if (selectedClassroom?.id === classroom.id) {
+        setSelectedClassroom(refreshedClassrooms[0] || null);
+      }
+
+      setActionMessage(`Success! Classroom "${classroom.name}" deleted.`);
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.response?.data?.message || e.message;
+      const errorMessage = `Failed to delete classroom: ${detail}`;
+      setActionMessage(errorMessage);
+      alert(errorMessage);
+    } finally {
+      setDeletingClassroomId(null);
     }
   };
 
@@ -471,16 +501,44 @@ export default function Dashboard() {
                   key={c.id} 
                   onClick={() => setSelectedClassroom(c)}
                   style={{
-                    padding: '12px 20px', borderRadius: '8px', cursor: 'pointer',
+                    padding: '12px 14px', borderRadius: '8px', cursor: 'pointer',
                     background: selectedClassroom?.id === c.id ? 'var(--accent-color)' : 'rgba(255,255,255,0.05)',
                     border: '1px solid',
                     borderColor: selectedClassroom?.id === c.id ? 'var(--accent-color)' : 'var(--panel-border)',
-                    transition: '0.2s'
+                    transition: '0.2s',
+                    minWidth: '220px'
                   }}
                 >
-                  <div style={{fontWeight: 600, color: '#fff'}}>{c.name}</div>
-                  <div style={{fontSize: '0.8rem', color: selectedClassroom?.id === c.id ? 'rgba(255,255,255,0.8)' : 'var(--text-secondary)'}}>
-                    Join Code: <strong style={{letterSpacing: '1px'}}>{c.join_code}</strong>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px'}}>
+                    <div>
+                      <div style={{fontWeight: 600, color: '#fff'}}>{c.name}</div>
+                      <div style={{fontSize: '0.8rem', color: selectedClassroom?.id === c.id ? 'rgba(255,255,255,0.8)' : 'var(--text-secondary)'}}>
+                        Join Code: <strong style={{letterSpacing: '1px'}}>{c.join_code}</strong>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleDeleteClassroom(c);
+                      }}
+                      disabled={deletingClassroomId === c.id}
+                      title="Delete classroom"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--danger)',
+                        cursor: deletingClassroomId === c.id ? 'not-allowed' : 'pointer',
+                        opacity: deletingClassroomId === c.id ? 0.6 : 1,
+                        padding: '2px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </div>
               ))

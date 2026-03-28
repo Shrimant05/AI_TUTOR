@@ -30,6 +30,7 @@ from src.database import (
     init_db, log_query, log_topic, get_dashboard_stats,
     create_classroom, join_classroom,
     get_classrooms_for_faculty, get_classrooms_for_student,
+    delete_classroom,
     get_student_query_insights, get_topic_wise_student_doubts, 
     get_student_doubts_by_topic, get_latency_stats, save_chat_feedback, get_feedback_preferences
 )
@@ -39,7 +40,7 @@ from src.mongo_auth import (
     create_session, revoke_session, update_last_login,
     save_chat_history, get_chat_histories
 )
-from src.config import DATA_DIR, normalize_classroom_id
+from src.config import DATA_DIR, normalize_classroom_id, get_classroom_vector_db_path
 from src.config import GOOGLE_CLIENT_ID
 from src.config import GEMINI_API_KEY, GEMINI_VISION_MODEL
 from src.main import _student_unable_to_answer, _student_attempted_solution
@@ -399,6 +400,38 @@ def retrieve_classrooms(current_user: dict = Depends(get_current_user)):
         return {"classrooms": get_classrooms_for_faculty(uid)}
     else:
         return {"classrooms": get_classrooms_for_student(uid)}
+
+
+@app.delete("/api/classrooms/{classroom_id}")
+def remove_classroom(classroom_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "faculty":
+        raise HTTPException(status_code=403, detail="Only faculty can delete classrooms")
+
+    normalized = normalize_classroom_id(classroom_id)
+    faculty_classrooms = {str(c["id"]) for c in get_classrooms_for_faculty(current_user["user_id"])}
+    if normalized not in faculty_classrooms:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    class_dir = os.path.join(DATA_DIR, normalized)
+    vector_dir = get_classroom_vector_db_path(normalized)
+
+    db_deleted = delete_classroom(normalized, current_user["user_id"])
+    if not db_deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete classroom")
+
+    try:
+        if os.path.isdir(class_dir):
+            shutil.rmtree(class_dir)
+        if os.path.isdir(vector_dir):
+            shutil.rmtree(vector_dir)
+    except Exception:
+        # DB delete has already succeeded, so return success while signaling partial cleanup.
+        return {
+            "message": "Classroom deleted, but file cleanup was partial",
+            "classroom_id": normalized,
+        }
+
+    return {"message": "Classroom deleted", "classroom_id": normalized}
 
 
 # --- Chat & Analytics ---

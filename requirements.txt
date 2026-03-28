@@ -1,6 +1,8 @@
 # Core Document Processing
 pypdf
 pymupdf
+paddleocr
+paddlepaddle
 pillow
 
 # Embeddings and Vector DB
